@@ -1,17 +1,28 @@
 {
-  "name": "olang-kernel",
-  "version": "0.1.0",
-  "author": "Olalekan Ogundipe info@workfily.com",
-  "description": "Minimal O-Lang kernel: parser + runtime",
-  "main": "cli.js",
+  "name": "olang",
+  "version": "1.0.0",
+  "author": "Olalekan Ogundipe <info@workfily.com>",
+  "description": "O-Lang: A governance language for user-directed, rule-enforced agent workflows",
+  "main": "./src/index.js",
   "bin": {
     "olang": "./cli.js"
   },
+  "files": [
+    "cli.js",
+    "src/"
+  ],
   "scripts": {
     "start": "node cli.js"
   },
   "dependencies": {
-    "commander": "^11.0.0" 
+    "commander": "^12.0.0",
+    "dotenv": "^17.2.3"
   },
-  "license": "MIT"
+  "keywords": ["agent", "governance", "workflow", "llm", "automation", "olang", "ai"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/O-Lang-Central/olang-kernel.git"
+  },
+  "homepage": "https://github.com/O-Lang-Central/olang-kernel"
 }
