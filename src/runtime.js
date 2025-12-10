@@ -35,7 +35,6 @@ class RuntimeAPI {
     return path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : undefined, obj);
   }
 
-  // 🔍 Find the last "Ask ... Save as ..." step that can be evolved
   findLastSummaryStep() {
     for (let i = this.workflowSteps.length - 1; i >= 0; i--) {
       const step = this.workflowSteps[i];
@@ -54,6 +53,20 @@ class RuntimeAPI {
           return value !== undefined ? String(value) : `{${path}}`;
         });
         const res = await agentResolver(action, this.context);
+        if (step.saveAs) this.context[step.saveAs] = res;
+        break;
+      }
+
+      case 'use': {
+        // "Use <Tool>" step
+        const res = await agentResolver(`Use ${step.tool}`, this.context);
+        if (step.saveAs) this.context[step.saveAs] = res;
+        break;
+      }
+
+      case 'ask': {
+        // "Ask <Target>" step
+        const res = await agentResolver(`Ask ${step.target}`, this.context);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;
       }
@@ -86,7 +99,6 @@ class RuntimeAPI {
       }
 
       case 'evolve': {
-        // ✅ Runtime-enforced bounded evolution
         const maxGen = step.constraints?.max_generations || 1;
         if (maxGen < 1) {
           this.context['improved_summary'] = this.context['summary'] || '';
@@ -100,34 +112,28 @@ class RuntimeAPI {
           return;
         }
 
-        const varName = summaryStep.saveAs; // e.g., "summary"
+        const varName = summaryStep.saveAs;
         let currentOutput = this.context[varName] || '';
 
-        // Run up to max_generations attempts
         for (let attempt = 0; attempt < maxGen; attempt++) {
-          // Rebuild the original action with current context (re-interpolates {doc.text}, etc.)
           let revisedAction = summaryStep.actionRaw.replace(/\{([^\}]+)\}/g, (_, path) => {
             const val = this.getNested(this.context, path.trim());
             return val !== undefined ? String(val) : `{${path}}`;
           });
 
-          // Append improvement feedback on every attempt (including first)
           if (step.feedback) {
-            revisedAction = revisedAction.replace(/(")$/ , `\n\n[IMPROVEMENT FEEDBACK: ${step.feedback}]$1`);
+            revisedAction = revisedAction.replace(/(")$/, `\n\n[IMPROVEMENT FEEDBACK: ${step.feedback}]$1`);
           }
 
-          // Delegate ONLY the "Ask ..." action to the resolver
           currentOutput = await agentResolver(revisedAction, this.context);
-          this.context[varName] = currentOutput; // update original variable
+          this.context[varName] = currentOutput;
 
-          // Optional: emit debrief for observability
           this.emit('debrief', {
             agent: step.agent || 'Evolver',
             message: `Evolve attempt ${attempt + 1}/${maxGen}: ${currentOutput.substring(0, 80)}...`
           });
         }
 
-        // ✅ Always expose final result as 'improved_summary' for downstream use
         this.context['improved_summary'] = currentOutput;
         break;
       }
@@ -167,7 +173,7 @@ class RuntimeAPI {
 
   async executeWorkflow(workflow, inputs, agentResolver) {
     this.context = { ...inputs };
-    this.workflowSteps = workflow.steps; // critical for evolve lookup
+    this.workflowSteps = workflow.steps;
 
     for (const step of workflow.steps) {
       await this.executeStep(step, agentResolver);

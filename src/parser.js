@@ -33,7 +33,7 @@ function parse(code) {
         stepNumber: parseInt(stepMatch[1], 10),
         actionRaw: stepMatch[2].trim(),
         saveAs: null,
-        constraints: {} // Initialize constraints
+        constraints: {}
       });
       i++;
       continue;
@@ -47,7 +47,7 @@ function parse(code) {
       continue;
     }
 
-    // Constraint (NEW: parse key = value lines and attach to last step)
+    // Constraint
     const constraintMatch = line.match(/^Constraint:\s*(.+)$/i);
     if (constraintMatch && workflow.steps.length > 0) {
       const lastStep = workflow.steps[workflow.steps.length - 1];
@@ -88,7 +88,7 @@ function parse(code) {
         body.push(lines[i]);
         i++;
       }
-      if (i < lines.length) i++; // skip 'End If'
+      if (i < lines.length) i++;
       workflow.steps.push({ type: 'if', condition, body: parseBlock(body) });
       continue;
     }
@@ -199,6 +199,32 @@ function parse(code) {
       continue;
     }
 
+    // --- New: Use <Tool> ---
+    const useMatch = line.match(/^Use\s+(.+)$/i);
+    if (useMatch) {
+      workflow.steps.push({
+        type: 'use',
+        tool: useMatch[1].trim(),
+        saveAs: null,
+        constraints: {}
+      });
+      i++;
+      continue;
+    }
+
+    // --- New: Ask <Target> ---
+    const askMatch = line.match(/^Ask\s+(.+)$/i);
+    if (askMatch) {
+      workflow.steps.push({
+        type: 'ask',
+        target: askMatch[1].trim(),
+        saveAs: null,
+        constraints: {}
+      });
+      i++;
+      continue;
+    }
+
     i++;
   }
 
@@ -221,25 +247,40 @@ function parseBlock(lines) {
       steps.push(current);
       continue;
     }
+
     const saveMatch = line.match(/^Save as\s+(.+)$/i);
     if (saveMatch && current) {
       current.saveAs = saveMatch[1].trim();
     }
+
     const debriefMatch = line.match(/^Debrief\s+(\w+)\s+with\s+"(.+)"$/i);
     if (debriefMatch) {
       steps.push({ type: 'debrief', agent: debriefMatch[1], message: debriefMatch[2] });
     }
+
     const evolveMatch = line.match(/^Evolve\s+(\w+)\s+using\s+feedback:\s+"(.+)"$/i);
     if (evolveMatch) {
       steps.push({ type: 'evolve', agent: evolveMatch[1], feedback: evolveMatch[2] });
     }
+
     const promptMatch = line.match(/^Prompt user to\s+"(.+)"$/i);
     if (promptMatch) {
       steps.push({ type: 'prompt', question: promptMatch[1], saveAs: null });
+    }
+
+    // New: Use <Tool>
+    const useMatch = line.match(/^Use\s+(.+)$/i);
+    if (useMatch) {
+      steps.push({ type: 'use', tool: useMatch[1].trim(), saveAs: null, constraints: {} });
+    }
+
+    // New: Ask <Target>
+    const askMatch = line.match(/^Ask\s+(.+)$/i);
+    if (askMatch) {
+      steps.push({ type: 'ask', target: askMatch[1].trim(), saveAs: null, constraints: {} });
     }
   }
   return steps;
 }
 
 module.exports = { parse };
-
