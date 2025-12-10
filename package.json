@@ -1,6 +1,6 @@
 {
   "name": "@o-lang/olang",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "Olalekan Ogundipe <info@workfily.com>",
   "description": "O-Lang: A governance language for user-directed, rule-enforced agent workflows",
   "main": "./src/index.js",
@@ -18,7 +18,15 @@
     "commander": "^12.0.0",
     "dotenv": "^17.2.3"
   },
-  "keywords": ["agent", "governance", "workflow", "llm", "automation", "olang", "ai"],
+  "keywords": [
+    "agent",
+    "governance",
+    "workflow",
+    "llm",
+    "automation",
+    "olang",
+    "ai"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
