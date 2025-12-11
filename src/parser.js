@@ -1,5 +1,11 @@
 // src/parser.js
-function parse(code) {
+
+function parse(code, fileName = null) {
+  // --- New: Enforce .ol extension if filename provided ---
+  if (fileName && !fileName.endsWith(".ol")) {
+    throw new Error(`Expected .ol workflow, got: ${fileName}`);
+  }
+
   const lines = code
     .split(/\r?\n/)
     .map(l => l.trim())
@@ -59,16 +65,11 @@ function parse(code) {
         let key = eq[1].trim();
         let value = eq[2].trim();
 
-        // Parse list: [a, b, c]
         if (value.startsWith('[') && value.endsWith(']')) {
           value = value.slice(1, -1).split(',').map(v => v.trim().replace(/^"/, '').replace(/"$/, ''));
-        }
-        // Parse number
-        else if (!isNaN(value)) {
+        } else if (!isNaN(value)) {
           value = Number(value);
-        }
-        // Keep string (remove quotes if present)
-        else if (value.startsWith('"') && value.endsWith('"')) {
+        } else if (value.startsWith('"') && value.endsWith('"')) {
           value = value.slice(1, -1);
         }
 
@@ -119,7 +120,7 @@ function parse(code) {
       continue;
     }
 
-    // Agent ... uses ...
+    // Agent uses
     const agentUseMatch = line.match(/^Agent\s+"([^"]+)"\s+uses\s+"([^"]+)"$/i);
     if (agentUseMatch) {
       workflow.steps.push({
@@ -199,7 +200,7 @@ function parse(code) {
       continue;
     }
 
-    // --- New: Use <Tool> ---
+    // Use <Tool>
     const useMatch = line.match(/^Use\s+(.+)$/i);
     if (useMatch) {
       workflow.steps.push({
@@ -212,7 +213,7 @@ function parse(code) {
       continue;
     }
 
-    // --- New: Ask <Target> ---
+    // Ask <Target>
     const askMatch = line.match(/^Ask\s+(.+)$/i);
     if (askMatch) {
       workflow.steps.push({
@@ -268,13 +269,11 @@ function parseBlock(lines) {
       steps.push({ type: 'prompt', question: promptMatch[1], saveAs: null });
     }
 
-    // New: Use <Tool>
     const useMatch = line.match(/^Use\s+(.+)$/i);
     if (useMatch) {
       steps.push({ type: 'use', tool: useMatch[1].trim(), saveAs: null, constraints: {} });
     }
 
-    // New: Ask <Target>
     const askMatch = line.match(/^Ask\s+(.+)$/i);
     if (askMatch) {
       steps.push({ type: 'ask', target: askMatch[1].trim(), saveAs: null, constraints: {} });

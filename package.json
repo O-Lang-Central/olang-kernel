@@ -30,7 +30,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/O-Lang-Central/olang-kernel.git"
+    "url": "git+https://github.com/O-Lang-Central/olang-kernel.git"
   },
-  "homepage": "https://github.com/O-Lang-Central/olang-kernel"
+  "homepage": "https://github.com/O-Lang-Central/olang-kernel",
+  "publishConfig": {
+    "access": "public"
+  }
 }
