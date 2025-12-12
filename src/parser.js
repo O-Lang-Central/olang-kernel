@@ -23,7 +23,7 @@ function parse(code, fileName = null) {
     let line = lines[i];
 
     // ============================
-    // NEW: Detect math operations
+    // NEW: Detect math operations..
     // ============================
 
     // Add X and Y
