@@ -22,6 +22,62 @@ function parse(code, fileName = null) {
   while (i < lines.length) {
     let line = lines[i];
 
+    // ============================
+    // NEW: Detect math operations
+    // ============================
+
+    // Add X and Y
+    let mathAdd = line.match(/^Add\s+\{(.+?)\}\s+and\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
+    if (mathAdd) {
+      workflow.steps.push({
+        type: 'calculate',
+        expression: `add({${mathAdd[1]}}, {${mathAdd[2]}})`,
+        saveAs: mathAdd[3].trim()
+      });
+      i++;
+      continue;
+    }
+
+    // Subtract A from B => B - A
+    let mathSub = line.match(/^Subtract\s+\{(.+?)\}\s+from\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
+    if (mathSub) {
+      workflow.steps.push({
+        type: 'calculate',
+        expression: `subtract({${mathSub[2]}}, {${mathSub[1]}})`,
+        saveAs: mathSub[3].trim()
+      });
+      i++;
+      continue;
+    }
+
+    // Multiply X and Y
+    let mathMul = line.match(/^Multiply\s+\{(.+?)\}\s+and\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
+    if (mathMul) {
+      workflow.steps.push({
+        type: 'calculate',
+        expression: `multiply({${mathMul[1]}}, {${mathMul[2]}})`,
+        saveAs: mathMul[3].trim()
+      });
+      i++;
+      continue;
+    }
+
+    // Divide A by B
+    let mathDiv = line.match(/^Divide\s+\{(.+?)\}\s+by\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
+    if (mathDiv) {
+      workflow.steps.push({
+        type: 'calculate',
+        expression: `divide({${mathDiv[1]}}, {${mathDiv[2]}})`,
+        saveAs: mathDiv[3].trim()
+      });
+      i++;
+      continue;
+    }
+
+    // ====================== END NEW MATH RULES ======================
+
+
+
     // Workflow
     const wfMatch = line.match(/^Workflow\s+"([^"]+)"(?:\s+with\s+(.+))?/i);
     if (wfMatch) {

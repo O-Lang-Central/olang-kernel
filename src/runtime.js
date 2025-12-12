@@ -74,10 +74,12 @@ class RuntimeAPI {
     // Replace context variables in curly braces
     expr = expr.replace(/\{([^\}]+)\}/g, (_, path) => {
       const value = this.getNested(this.context, path.trim());
+      // if value is string, wrap in quotes for functions that accept strings
+      if (typeof value === 'string') return `"${value.replace(/"/g, '\\"')}"`;
       return value !== undefined ? value : 0;
     });
 
-    // Create a function for supported math functions only
+    // expose safe functions only
     const funcNames = Object.keys(this.mathFunctions);
     const safeFunc = {};
     funcNames.forEach(fn => {
@@ -100,7 +102,7 @@ class RuntimeAPI {
   async executeStep(step, agentResolver) {
     switch (step.type) {
       case 'calculate': {
-        // e.g., "add({x}, {y})"
+        // step.expression or actionRaw can contain math expression strings
         const expr = step.expression || step.actionRaw;
         const result = this.evaluateMath(expr);
         if (step.saveAs) this.context[step.saveAs] = result;
@@ -112,6 +114,32 @@ class RuntimeAPI {
           const value = this.getNested(this.context, path.trim());
           return value !== undefined ? String(value) : `{${path}}`;
         });
+
+        // Provide fallback math recognition for action lines too (e.g., add(1,2))
+        // Try simple math function calls in action form
+        const mathCall = action.match(/^(add|subtract|multiply|divide|sum|avg|min|max|round|floor|ceil|abs)\((.*)\)$/i);
+        if (mathCall) {
+          const fn = mathCall[1].toLowerCase();
+          const argsRaw = mathCall[2];
+          // simple split by comma (doesn't handle nested arrays/funcs) — fine for workflow math
+          const args = argsRaw.split(',').map(s => s.trim()).map(s => {
+            // if it's a quoted string
+            if (/^".*"$/.test(s) || /^'.*'$/.test(s)) return s.slice(1, -1);
+            // try number
+            if (!isNaN(s)) return parseFloat(s);
+            // variable lookup
+            const lookup = s.replace(/^\{|\}$/g, '').trim();
+            return this.getNested(this.context, lookup);
+          });
+
+          if (this.mathFunctions[fn]) {
+            const value = this.mathFunctions[fn](...args);
+            if (step.saveAs) this.context[step.saveAs] = value;
+            break;
+          }
+        }
+
+        // fallback to agent resolver
         const res = await agentResolver(action, this.context);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;

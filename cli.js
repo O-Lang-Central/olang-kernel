@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const { Command } = require('commander');
-const { parse } = require('./src/parser');
-const { execute } = require('./src/runtime');
+const { parse } = require('../src/parser'); // adjusted path if bin vs root
+const { execute } = require('../src/runtime');
 const fs = require('fs');
 const path = require('path');
 
@@ -21,6 +21,8 @@ function ensureOlExtension(filename) {
  * Default mock resolver (for demo use)
  */
 async function defaultMockResolver(action, context) {
+  if (!action || typeof action !== 'string') return `[Unhandled: ${String(action)}]`;
+
   if (action.startsWith('Search for ')) {
     return {
       title: "HR Policy 2025",
@@ -47,31 +49,41 @@ async function defaultMockResolver(action, context) {
 }
 
 /**
- * Built-in Math Resolver
- * Supports minimal math operations for workflows
+ * Built-in Math Resolver (so action style math strings are handled too)
+ * Supports action strings like: add(1,2), subtract(5,2), multiply(2,3), divide(6,3), sum([1,2,3])
+ * Note: runtime handles calculate steps; this resolver helps when parser emits actions with math strings.
  */
 async function builtInMathResolver(action, context) {
-  // Replace variables in context
-  action = action.replace(/\{([^\}]+)\}/g, (_, key) => {
-    const val = context[key.trim()];
-    return val !== undefined ? val : `{${key}}`;
+  if (!action || typeof action !== 'string') return null;
+
+  // Replace contextual placeholders {var}
+  const a = action.replace(/\{([^\}]+)\}/g, (_, k) => {
+    const v = context[k.trim()];
+    return v !== undefined ? v : `{${k}}`;
   });
 
-  let match;
+  // simple function matches
+  let m;
+  m = a.match(/^add\(([^,]+),\s*([^)]+)\)$/i);
+  if (m) return parseFloat(m[1]) + parseFloat(m[2]);
 
-  match = action.match(/^add\(([^,]+),\s*([^)]+)\)$/);
-  if (match) return parseFloat(match[1]) + parseFloat(match[2]);
+  m = a.match(/^subtract\(([^,]+),\s*([^)]+)\)$/i);
+  if (m) return parseFloat(m[1]) - parseFloat(m[2]);
 
-  match = action.match(/^subtract\(([^,]+),\s*([^)]+)\)$/);
-  if (match) return parseFloat(match[1]) - parseFloat(match[2]);
+  m = a.match(/^multiply\(([^,]+),\s*([^)]+)\)$/i);
+  if (m) return parseFloat(m[1]) * parseFloat(m[2]);
 
-  match = action.match(/^multiply\(([^,]+),\s*([^)]+)\)$/);
-  if (match) return parseFloat(match[1]) * parseFloat(match[2]);
+  m = a.match(/^divide\(([^,]+),\s*([^)]+)\)$/i);
+  if (m) return parseFloat(m[1]) / parseFloat(m[2]);
 
-  match = action.match(/^divide\(([^,]+),\s*([^)]+)\)$/);
-  if (match) return parseFloat(match[1]) / parseFloat(match[2]);
+  m = a.match(/^sum\(\s*\[([^\]]+)\]\s*\)$/i);
+  if (m) {
+    const arr = m[1].split(',').map(s => parseFloat(s.trim()));
+    return arr.reduce((s, v) => s + v, 0);
+  }
 
-  return null; // not handled
+  // not a math action
+  return null;
 }
 
 /**
@@ -119,8 +131,7 @@ function loadSingleResolver(specifier) {
 }
 
 /**
- * Updated resolver chain
- * Built-in math resolver is added first, then user resolvers, then default mock
+ * loadResolverChain: include built-in math resolver first, then user resolvers, then default mock resolver
  */
 function loadResolverChain(specifiers) {
   const userResolvers = specifiers?.map(loadSingleResolver) || [];
@@ -155,7 +166,9 @@ program
     'Input parameters',
     (val, acc = {}) => {
       const [k, v] = val.split('=');
-      acc[k] = isNaN(v) ? v : parseFloat(v);
+      // try to parse numbers, preserve strings otherwise
+      const parsed = v === undefined ? '' : (v === 'true' ? true : (v === 'false' ? false : (isNaN(v) ? v : parseFloat(v))));
+      acc[k] = parsed;
       return acc;
     },
     {}
