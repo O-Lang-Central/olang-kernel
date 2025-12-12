@@ -24,9 +24,11 @@ class RuntimeAPI {
   evaluateCondition(cond, ctx) {
     cond = cond.trim();
     const eq = cond.match(/^\{(.+)\}\s+equals\s+"(.*)"$/);
-    if (eq) return this.getNested(ctx, eq[1]) === eq[2];
+    if (eq) return this.getNested(ctx, eq[1]) == eq[2];
     const gt = cond.match(/^\{(.+)\}\s+greater than\s+(\d+\.?\d*)$/);
     if (gt) return parseFloat(this.getNested(ctx, gt[1])) > parseFloat(gt[2]);
+    const lt = cond.match(/^\{(.+)\}\s+less than\s+(\d+\.?\d*)$/);
+    if (lt) return parseFloat(this.getNested(ctx, lt[1])) < parseFloat(lt[2]);
     return Boolean(this.getNested(ctx, cond.replace(/\{|\}/g, '')));
   }
 
@@ -45,8 +47,66 @@ class RuntimeAPI {
     return null;
   }
 
+  // --------------------------
+  // Math helper functions
+  // --------------------------
+  mathFunctions = {
+    add: (a, b) => a + b,
+    subtract: (a, b) => a - b,
+    multiply: (a, b) => a * b,
+    divide: (a, b) => a / b,
+    equals: (a, b) => a === b,
+    greater: (a, b) => a > b,
+    less: (a, b) => a < b,
+    sum: arr => arr.reduce((acc, val) => acc + val, 0),
+    avg: arr => arr.reduce((acc, val) => acc + val, 0) / arr.length,
+    min: arr => Math.min(...arr),
+    max: arr => Math.max(...arr),
+    increment: a => a + 1,
+    decrement: a => a - 1,
+    round: a => Math.round(a),
+    floor: a => Math.floor(a),
+    ceil: a => Math.ceil(a),
+    abs: a => Math.abs(a)
+  };
+
+  evaluateMath(expr) {
+    // Replace context variables in curly braces
+    expr = expr.replace(/\{([^\}]+)\}/g, (_, path) => {
+      const value = this.getNested(this.context, path.trim());
+      return value !== undefined ? value : 0;
+    });
+
+    // Create a function for supported math functions only
+    const funcNames = Object.keys(this.mathFunctions);
+    const safeFunc = {};
+    funcNames.forEach(fn => {
+      safeFunc[fn] = this.mathFunctions[fn];
+    });
+
+    try {
+      // eslint-disable-next-line no-new-func
+      const f = new Function(...funcNames, `return ${expr};`);
+      return f(...funcNames.map(fn => safeFunc[fn]));
+    } catch (e) {
+      console.warn(`[O-Lang] Failed to evaluate math expression "${expr}": ${e.message}`);
+      return 0;
+    }
+  }
+
+  // --------------------------
+  // Execute workflow step
+  // --------------------------
   async executeStep(step, agentResolver) {
     switch (step.type) {
+      case 'calculate': {
+        // e.g., "add({x}, {y})"
+        const expr = step.expression || step.actionRaw;
+        const result = this.evaluateMath(expr);
+        if (step.saveAs) this.context[step.saveAs] = result;
+        break;
+      }
+
       case 'action': {
         const action = step.actionRaw.replace(/\{([^\}]+)\}/g, (_, path) => {
           const value = this.getNested(this.context, path.trim());
@@ -58,14 +118,12 @@ class RuntimeAPI {
       }
 
       case 'use': {
-        // "Use <Tool>" step
         const res = await agentResolver(`Use ${step.tool}`, this.context);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;
       }
 
       case 'ask': {
-        // "Ask <Target>" step
         const res = await agentResolver(`Ask ${step.target}`, this.context);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;

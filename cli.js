@@ -47,6 +47,34 @@ async function defaultMockResolver(action, context) {
 }
 
 /**
+ * Built-in Math Resolver
+ * Supports minimal math operations for workflows
+ */
+async function builtInMathResolver(action, context) {
+  // Replace variables in context
+  action = action.replace(/\{([^\}]+)\}/g, (_, key) => {
+    const val = context[key.trim()];
+    return val !== undefined ? val : `{${key}}`;
+  });
+
+  let match;
+
+  match = action.match(/^add\(([^,]+),\s*([^)]+)\)$/);
+  if (match) return parseFloat(match[1]) + parseFloat(match[2]);
+
+  match = action.match(/^subtract\(([^,]+),\s*([^)]+)\)$/);
+  if (match) return parseFloat(match[1]) - parseFloat(match[2]);
+
+  match = action.match(/^multiply\(([^,]+),\s*([^)]+)\)$/);
+  if (match) return parseFloat(match[1]) * parseFloat(match[2]);
+
+  match = action.match(/^divide\(([^,]+),\s*([^)]+)\)$/);
+  if (match) return parseFloat(match[1]) / parseFloat(match[2]);
+
+  return null; // not handled
+}
+
+/**
  * Resolver chaining mechanism
  */
 function createResolverChain(resolvers) {
@@ -90,13 +118,20 @@ function loadSingleResolver(specifier) {
   }
 }
 
+/**
+ * Updated resolver chain
+ * Built-in math resolver is added first, then user resolvers, then default mock
+ */
 function loadResolverChain(specifiers) {
+  const userResolvers = specifiers?.map(loadSingleResolver) || [];
+  const resolvers = [builtInMathResolver, ...userResolvers, defaultMockResolver];
+
   if (!specifiers || specifiers.length === 0) {
-    console.log('ℹ️ No resolver provided. Using default mock resolver.');
-    return defaultMockResolver;
+    console.log('ℹ️ No resolver provided. Using built-in math + default mock resolver.');
+  } else {
+    console.log(`📦 Loaded user resolvers: ${specifiers.join(', ')}`);
   }
 
-  const resolvers = specifiers.map(loadSingleResolver);
   return createResolverChain(resolvers);
 }
 
@@ -120,7 +155,7 @@ program
     'Input parameters',
     (val, acc = {}) => {
       const [k, v] = val.split('=');
-      acc[k] = v;
+      acc[k] = isNaN(v) ? v : parseFloat(v);
       return acc;
     },
     {}
