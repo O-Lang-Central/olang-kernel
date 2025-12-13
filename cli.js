@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const { Command } = require('commander');
-const { parse } = require('../src/parser'); // adjusted path if bin vs root
-const { execute } = require('../src/runtime');
+const { parse } = require('./src/parser');
+const { execute } = require('./src/runtime');
 const fs = require('fs');
 const path = require('path');
 
