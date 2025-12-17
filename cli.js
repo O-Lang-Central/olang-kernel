@@ -49,61 +49,47 @@ async function defaultMockResolver(action, context) {
 }
 
 /**
- * Built-in Math Resolver (so action style math strings are handled too)
- * Supports action strings like: add(1,2), subtract(5,2), multiply(2,3), divide(6,3), sum([1,2,3])
- * Note: runtime handles calculate steps; this resolver helps when parser emits actions with math strings.
+ * Built-in Math Resolver
  */
 async function builtInMathResolver(action, context) {
   if (!action || typeof action !== 'string') return null;
 
-  // Replace contextual placeholders {var}
   const a = action.replace(/\{([^\}]+)\}/g, (_, k) => {
     const v = context[k.trim()];
     return v !== undefined ? v : `{${k}}`;
   });
 
-  // simple function matches
   let m;
-  m = a.match(/^add\(([^,]+),\s*([^)]+)\)$/i);
-  if (m) return parseFloat(m[1]) + parseFloat(m[2]);
+  m = a.match(/^add\(([^,]+),\s*([^)]+)\)$/i); if (m) return parseFloat(m[1]) + parseFloat(m[2]);
+  m = a.match(/^subtract\(([^,]+),\s*([^)]+)\)$/i); if (m) return parseFloat(m[1]) - parseFloat(m[2]);
+  m = a.match(/^multiply\(([^,]+),\s*([^)]+)\)$/i); if (m) return parseFloat(m[1]) * parseFloat(m[2]);
+  m = a.match(/^divide\(([^,]+),\s*([^)]+)\)$/i); if (m) return parseFloat(m[1]) / parseFloat(m[2]);
+  m = a.match(/^sum\(\s*\[([^\]]+)\]\s*\)$/i); if (m) return m[1].split(',').map(s => parseFloat(s.trim())).reduce((s, v) => s + v, 0);
 
-  m = a.match(/^subtract\(([^,]+),\s*([^)]+)\)$/i);
-  if (m) return parseFloat(m[1]) - parseFloat(m[2]);
-
-  m = a.match(/^multiply\(([^,]+),\s*([^)]+)\)$/i);
-  if (m) return parseFloat(m[1]) * parseFloat(m[2]);
-
-  m = a.match(/^divide\(([^,]+),\s*([^)]+)\)$/i);
-  if (m) return parseFloat(m[1]) / parseFloat(m[2]);
-
-  m = a.match(/^sum\(\s*\[([^\]]+)\]\s*\)$/i);
-  if (m) {
-    const arr = m[1].split(',').map(s => parseFloat(s.trim()));
-    return arr.reduce((s, v) => s + v, 0);
-  }
-
-  // not a math action
   return null;
 }
 
 /**
- * Resolver chaining mechanism
+ * Resolver chaining with verbose + context logging
  */
-function createResolverChain(resolvers) {
-  return async (action, context) => {
-    for (const resolver of resolvers) {
+function createResolverChain(resolvers, verbose = false) {
+  const chain = resolvers.slice();
+  const wrapped = async (action, context) => {
+    let lastResult;
+    for (let i = 0; i < chain.length; i++) {
       try {
-        const result = await resolver(action, context);
-        if (result !== null && result !== undefined) {
-          return result;
-        }
-      } catch (err) {
-        console.error(`❌ Resolver error for action "${action}":`, err.message);
-        throw err;
+        const res = await chain[i](action, context);
+        context[`__resolver_${i}`] = res;
+        lastResult = res;
+      } catch (e) {
+        console.error(`❌ Resolver ${i} failed for action "${action}":`, e.message);
       }
     }
-    return `[Unhandled: ${action}]`;
+    if (verbose) console.log(`[Resolver Chain] action="${action}" lastResult=`, lastResult);
+    return lastResult;
   };
+  wrapped._chain = chain;
+  return wrapped;
 }
 
 function loadSingleResolver(specifier) {
@@ -111,9 +97,7 @@ function loadSingleResolver(specifier) {
 
   try {
     const resolver = require(specifier);
-    if (typeof resolver !== 'function') {
-      throw new Error(`Resolver must export a function`);
-    }
+    if (typeof resolver !== 'function') throw new Error(`Resolver must export a function`);
     console.log(`📦 Loaded resolver: ${specifier}`);
     return resolver;
   } catch (e1) {
@@ -133,7 +117,7 @@ function loadSingleResolver(specifier) {
 /**
  * loadResolverChain: include built-in math resolver first, then user resolvers, then default mock resolver
  */
-function loadResolverChain(specifiers) {
+function loadResolverChain(specifiers, verbose = false) {
   const userResolvers = specifiers?.map(loadSingleResolver) || [];
   const resolvers = [builtInMathResolver, ...userResolvers, defaultMockResolver];
 
@@ -143,7 +127,7 @@ function loadResolverChain(specifiers) {
     console.log(`📦 Loaded user resolvers: ${specifiers.join(', ')}`);
   }
 
-  return createResolverChain(resolvers);
+  return createResolverChain(resolvers, verbose);
 }
 
 /**
@@ -157,7 +141,7 @@ program
   .command('run <file>')
   .option(
     '-r, --resolver <specifier>',
-    'Resolver (npm package or local path). Can be used multiple times.\nExample:\n  -r @o-lang/llm-groq\n  -r @o-lang/notify-telegram',
+    'Resolver (npm package or local path). Can be used multiple times.',
     (val, acc) => { acc.push(val); return acc; },
     []
   )
@@ -166,13 +150,13 @@ program
     'Input parameters',
     (val, acc = {}) => {
       const [k, v] = val.split('=');
-      // try to parse numbers, preserve strings otherwise
       const parsed = v === undefined ? '' : (v === 'true' ? true : (v === 'false' ? false : (isNaN(v) ? v : parseFloat(v))));
       acc[k] = parsed;
       return acc;
     },
     {}
   )
+  .option('-v, --verbose', 'Verbose mode: logs resolver outputs and context after each step')
   .action(async (file, options) => {
     try {
       ensureOlExtension(file);
@@ -180,8 +164,8 @@ program
       const content = fs.readFileSync(file, 'utf8');
       const workflow = parse(content);
 
-      const resolver = loadResolverChain(options.resolver);
-      const result = await execute(workflow, options.input, resolver);
+      const resolver = loadResolverChain(options.resolver, options.verbose);
+      const result = await execute(workflow, options.input, resolver, options.verbose);
 
       console.log('\n=== Workflow Result ===');
       console.log(JSON.stringify(result, null, 2));

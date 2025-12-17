@@ -1,13 +1,13 @@
-// src/runtime.js
 const fs = require('fs');
 
 class RuntimeAPI {
-  constructor() {
+  constructor({ verbose = false } = {}) {
     this.context = {};
     this.resources = {};
     this.agentMap = {};
     this.events = {};
     this.workflowSteps = []; // store for evolve lookup
+    this.verbose = verbose; // verbose logging flag
   }
 
   on(eventName, cb) {
@@ -47,9 +47,6 @@ class RuntimeAPI {
     return null;
   }
 
-  // --------------------------
-  // Math helper functions
-  // --------------------------
   mathFunctions = {
     add: (a, b) => a + b,
     subtract: (a, b) => a - b,
@@ -71,15 +68,12 @@ class RuntimeAPI {
   };
 
   evaluateMath(expr) {
-    // Replace context variables in curly braces
     expr = expr.replace(/\{([^\}]+)\}/g, (_, path) => {
       const value = this.getNested(this.context, path.trim());
-      // if value is string, wrap in quotes for functions that accept strings
       if (typeof value === 'string') return `"${value.replace(/"/g, '\\"')}"`;
       return value !== undefined ? value : 0;
     });
 
-    // expose safe functions only
     const funcNames = Object.keys(this.mathFunctions);
     const safeFunc = {};
     funcNames.forEach(fn => {
@@ -87,7 +81,6 @@ class RuntimeAPI {
     });
 
     try {
-      // eslint-disable-next-line no-new-func
       const f = new Function(...funcNames, `return ${expr};`);
       return f(...funcNames.map(fn => safeFunc[fn]));
     } catch (e) {
@@ -100,9 +93,33 @@ class RuntimeAPI {
   // Execute workflow step
   // --------------------------
   async executeStep(step, agentResolver) {
-    switch (step.type) {
+    const stepType = step.type;
+
+    // Helper: execute all resolvers for this step action
+    const runAllResolvers = async (action) => {
+      const outputs = [];
+      if (agentResolver && Array.isArray(agentResolver._chain)) {
+        for (let idx = 0; idx < agentResolver._chain.length; idx++) {
+          const resolver = agentResolver._chain[idx];
+          try {
+            const out = await resolver(action, this.context);
+            outputs.push(out);
+            this.context[`__resolver_${idx}`] = out;
+          } catch (e) {
+            console.error(`❌ Resolver ${idx} error for action "${action}":`, e.message);
+            outputs.push(null);
+          }
+        }
+      } else {
+        const out = await agentResolver(action, this.context);
+        outputs.push(out);
+        this.context['__resolver_0'] = out;
+      }
+      return outputs[outputs.length - 1]; // last result as primary
+    };
+
+    switch (stepType) {
       case 'calculate': {
-        // step.expression or actionRaw can contain math expression strings
         const expr = step.expression || step.actionRaw;
         const result = this.evaluateMath(expr);
         if (step.saveAs) this.context[step.saveAs] = result;
@@ -115,23 +132,16 @@ class RuntimeAPI {
           return value !== undefined ? String(value) : `{${path}}`;
         });
 
-        // Provide fallback math recognition for action lines too (e.g., add(1,2))
-        // Try simple math function calls in action form
         const mathCall = action.match(/^(add|subtract|multiply|divide|sum|avg|min|max|round|floor|ceil|abs)\((.*)\)$/i);
         if (mathCall) {
           const fn = mathCall[1].toLowerCase();
           const argsRaw = mathCall[2];
-          // simple split by comma (doesn't handle nested arrays/funcs) — fine for workflow math
           const args = argsRaw.split(',').map(s => s.trim()).map(s => {
-            // if it's a quoted string
             if (/^".*"$/.test(s) || /^'.*'$/.test(s)) return s.slice(1, -1);
-            // try number
             if (!isNaN(s)) return parseFloat(s);
-            // variable lookup
             const lookup = s.replace(/^\{|\}$/g, '').trim();
             return this.getNested(this.context, lookup);
           });
-
           if (this.mathFunctions[fn]) {
             const value = this.mathFunctions[fn](...args);
             if (step.saveAs) this.context[step.saveAs] = value;
@@ -139,20 +149,19 @@ class RuntimeAPI {
           }
         }
 
-        // fallback to agent resolver
-        const res = await agentResolver(action, this.context);
+        const res = await runAllResolvers(action);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;
       }
 
       case 'use': {
-        const res = await agentResolver(`Use ${step.tool}`, this.context);
+        const res = await runAllResolvers(`Use ${step.tool}`);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;
       }
 
       case 'ask': {
-        const res = await agentResolver(`Ask ${step.target}`, this.context);
+        const res = await runAllResolvers(`Ask ${step.target}`);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;
       }
@@ -211,7 +220,7 @@ class RuntimeAPI {
             revisedAction = revisedAction.replace(/(")$/, `\n\n[IMPROVEMENT FEEDBACK: ${step.feedback}]$1`);
           }
 
-          currentOutput = await agentResolver(revisedAction, this.context);
+          currentOutput = await runAllResolvers(revisedAction);
           this.context[varName] = currentOutput;
 
           this.emit('debrief', {
@@ -244,6 +253,12 @@ class RuntimeAPI {
         break;
       }
     }
+
+    // Verbose logging of context after each step
+    if (this.verbose) {
+      console.log(`\n[Step: ${step.type} | saveAs: ${step.saveAs || 'N/A'}]`);
+      console.log(JSON.stringify(this.context, null, 2));
+    }
   }
 
   async getUserInput(question) {
@@ -273,8 +288,8 @@ class RuntimeAPI {
   }
 }
 
-async function execute(workflow, inputs, agentResolver) {
-  const rt = new RuntimeAPI();
+async function execute(workflow, inputs, agentResolver, verbose = false) {
+  const rt = new RuntimeAPI({ verbose });
   return rt.executeWorkflow(workflow, inputs, agentResolver);
 }
 
