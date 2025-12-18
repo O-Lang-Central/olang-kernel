@@ -94,7 +94,17 @@ function loadSingleResolver(specifier) {
     throw new Error('Empty resolver specifier provided');
   }
 
-  let resolver;
+  let resolver, pkgName;
+
+  // Extract clean package name (e.g., @o-lang/extractor → extractor)
+  if (specifier.startsWith('./') || specifier.startsWith('../') || specifier.startsWith('/')) {
+    // Local file: use filename without extension
+    pkgName = path.basename(specifier, path.extname(specifier));
+  } else {
+    // npm package: strip scope (e.g., @o-lang/extractor → extractor)
+    pkgName = specifier.replace(/^@[^/]+\//, '');
+  }
+
   try {
     resolver = require(specifier);
   } catch (e1) {
@@ -113,15 +123,14 @@ function loadSingleResolver(specifier) {
     throw new Error(`Resolver must export a function`);
   }
 
-  // ✅ Enforce that resolvers self-identify
+  // ✅ Auto-assign resolverName from package/filename if missing
   if (!resolver.resolverName || typeof resolver.resolverName !== 'string') {
-    throw new Error(
-      `Resolver from '${specifier}' is missing a valid .resolverName property.\n` +
-      `All O-Lang resolvers must export: \`module.exports.resolverName = "MyResolver";\``
-    );
+    resolver.resolverName = pkgName;
+    console.log(` 🏷️  Auto-assigned resolverName: "${pkgName}" (from ${specifier})`);
+  } else {
+    console.log(` 📦  Loaded resolver: ${specifier} (name: ${resolver.resolverName})`);
   }
 
-  console.log(` 📦  Loaded resolver: ${specifier} (name: ${resolver.resolverName})`);
   return resolver;
 }
 
