@@ -29,24 +29,25 @@ function parse(code, fileName = null) {
     let line = lines[i];
 
     // ✅ FIXED: Match both "Allow resolvers" and "Allowed resolvers"
-    const allowMatch = line.match(/^Allow(?:ed)?\s+resolvers\s*:\s*$/i);
-    if (allowMatch) {
-      i++;
-      // Read all subsequent non-empty lines until a new top-level section (starts with capital letter)
-      while (i < lines.length) {
-        const nextLine = lines[i].trim();
-        // Stop if line is empty or appears to be a new top-level keyword (e.g., Step, Workflow, Return)
-        if (nextLine === '' || /^[A-Z][a-z]/.test(nextLine)) {
-          break;
-        }
-        if (nextLine) {
-          workflow.allowedResolvers.push(nextLine);
-          workflow.resolverPolicy.declared.push(nextLine);
-        }
-        i++;
-      }
-      continue;
+   const allowMatch = line.match(/^Allow resolvers\s*:\s*$/i);
+if (allowMatch) {
+  i++;
+  while (i < lines.length) {
+    const nextLine = lines[i].trim();
+    // Stop if line is empty or looks like a new top-level section
+    if (nextLine === '' || /^[A-Z][a-z]/.test(nextLine)) {
+      break;
     }
+    // Strip optional YAML list marker: "- name" → "name"
+    const cleanVal = nextLine.replace(/^\-\s*/, '').trim();
+    if (cleanVal) {
+      workflow.allowedResolvers.push(cleanVal);
+      workflow.resolverPolicy.declared.push(cleanVal);
+    }
+    i++;
+  }
+  continue;
+}
 
     // ---- Math step patterns (standalone) ----
     let mathAdd = line.match(/^Add\s+\{(.+?)\}\s+and\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
