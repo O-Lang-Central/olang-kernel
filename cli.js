@@ -68,6 +68,8 @@ async function builtInMathResolver(action, context) {
 
   return null;
 }
+// Add resolver metadata so workflow policy recognizes it
+builtInMathResolver.resolverName = 'builtInMathResolver';
 
 /**
  * Resolver chaining with verbose + context logging
@@ -164,7 +166,17 @@ program
       const content = fs.readFileSync(file, 'utf8');
       const workflow = parse(content);
 
+      if (!workflow || typeof workflow !== 'object') {
+        console.error('❌ Error: Parsed workflow is invalid or empty');
+        process.exit(1);
+      }
+
+      if (options.verbose) {
+        console.log('📄 Parsed Workflow:', JSON.stringify(workflow, null, 2));
+      }
+
       const resolver = loadResolverChain(options.resolver, options.verbose);
+
       const result = await execute(workflow, options.input, resolver, options.verbose);
 
       console.log('\n=== Workflow Result ===');
