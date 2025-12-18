@@ -1,7 +1,6 @@
 // src/parser.js
 
 function parse(code, fileName = null) {
-  // --- Enforce .ol extension if filename provided ---
   if (fileName && !fileName.endsWith(".ol")) {
     throw new Error(`Expected .ol workflow, got: ${fileName}`);
   }
@@ -19,7 +18,6 @@ function parse(code, fileName = null) {
     returnValues: [],
     allowedResolvers: [],
 
-    // --- NEW: formal resolver policy ---
     resolverPolicy: {
       declared: [],
       autoInjected: [],
@@ -27,10 +25,7 @@ function parse(code, fileName = null) {
       warnings: []
     },
 
-    // --- NEW: parser warnings (non-fatal) ---
     __warnings: [],
-
-    // --- NEW: feature detection flags ---
     __requiresMath: false
   };
 
@@ -39,9 +34,6 @@ function parse(code, fileName = null) {
   while (i < lines.length) {
     let line = lines[i];
 
-    // ---------------------------
-    // Resolver policy declaration
-    // ---------------------------
     const allowMatch = line.match(/^Allow resolvers\s*:\s*$/i);
     if (allowMatch) {
       i++;
@@ -56,9 +48,6 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // ============================
-    // Math operations (detected)
-    // ============================
     let mathAdd = line.match(/^Add\s+\{(.+?)\}\s+and\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
     if (mathAdd) {
       workflow.__requiresMath = true;
@@ -107,9 +96,6 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // ---------------------------
-    // Workflow definition
-    // ---------------------------
     const wfMatch = line.match(/^Workflow\s+"([^"]+)"(?:\s+with\s+(.+))?/i);
     if (wfMatch) {
       workflow.name = wfMatch[1];
@@ -121,24 +107,50 @@ function parse(code, fileName = null) {
     }
 
     // ---------------------------
-    // Steps
+    // Return statement (smart math detection)
+    // ---------------------------
+    const returnMatch = line.match(/^Return\s+(.+)$/i);
+    if (returnMatch) {
+      workflow.returnValues = returnMatch[1].split(',').map(v => v.trim());
+      workflow.returnValues.forEach(v => {
+        if (v.match(/[A-Z][A-Za-z0-9_]*/)) workflow.__requiresMath = true;
+      });
+      i++;
+      continue;
+    }
+
+    // ---------------------------
+    // Steps (smart math detection)
     // ---------------------------
     const stepMatch = line.match(/^Step\s+(\d+)\s*:\s*(.+)$/i);
     if (stepMatch) {
-      workflow.steps.push({
+      const step = {
         type: 'action',
         stepNumber: parseInt(stepMatch[1], 10),
         actionRaw: stepMatch[2].trim(),
         saveAs: null,
         constraints: {}
-      });
+      };
+
+      workflow.steps.push(step);
+
+      if (step.actionRaw.match(/\{[A-Za-z_][A-Za-z0-9_]*\}/)) {
+        workflow.__requiresMath = true;
+      }
+
       i++;
       continue;
     }
 
     const saveMatch = line.match(/^Save as\s+(.+)$/i);
     if (saveMatch && workflow.steps.length > 0) {
-      workflow.steps[workflow.steps.length - 1].saveAs = saveMatch[1].trim();
+      const lastStep = workflow.steps[workflow.steps.length - 1];
+      lastStep.saveAs = saveMatch[1].trim();
+
+      if (lastStep.saveAs.match(/[A-Z][A-Za-z0-9_]*/)) {
+        workflow.__requiresMath = true;
+      }
+
       i++;
       continue;
     }
@@ -169,26 +181,18 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // ---------------------------
-    // (ALL remaining blocks unchanged)
-    // If, Parallel, Connect, Agent, Debrief, Evolve,
-    // Prompt, Persist, Emit, Return, Use, Ask
-    // ---------------------------
-
     i++;
   }
 
   // ============================
   // LINT & POLICY FINALIZATION
   // ============================
-
   if (workflow.__requiresMath) {
     workflow.resolverPolicy.used.push('builtInMathResolver');
 
     if (!workflow.resolverPolicy.declared.includes('builtInMathResolver')) {
       workflow.resolverPolicy.autoInjected.push('builtInMathResolver');
       workflow.allowedResolvers.unshift('builtInMathResolver');
-
       workflow.__warnings.push(
         'Math operations detected. builtInMathResolver auto-injected.'
       );
