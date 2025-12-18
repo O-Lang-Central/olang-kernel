@@ -145,13 +145,26 @@ class RuntimeAPI {
     const stepType = step.type;
 
     const validateResolver = (resolver) => {
-      const resolverName = resolver?.name || resolver?.resolverName;
-      if (!resolverName) throw new Error('[O-Lang] Resolver missing name metadata');
-      if (!this.allowedResolvers.has(resolverName)) {
-        this.logDisallowedResolver(resolverName, step.actionRaw || step.tool || step.target);
-        throw new Error(`[O-Lang] Resolver "${resolverName}" is not allowed by workflow policy`);
-      }
-    };
+  // Get resolver name from metadata, trim whitespace
+  const resolverName = (resolver?.resolverName || resolver?.name || '').trim();
+
+  if (!resolverName) throw new Error('[O-Lang] Resolver missing name metadata');
+
+  // Normalize allowed resolver names for comparison
+  const allowed = Array.from(this.allowedResolvers || []).map(r => r.trim());
+
+  // Auto-inject builtInMathResolver if math is required
+  if (resolverName === 'builtInMathResolver' && workflow.__requiresMath && !allowed.includes('builtInMathResolver')) {
+    this.allowedResolvers.add('builtInMathResolver');
+    allowed.push('builtInMathResolver');
+  }
+
+  if (!allowed.includes(resolverName)) {
+    this.logDisallowedResolver(resolverName, step.actionRaw || step.tool || step.target);
+    throw new Error(`[O-Lang] Resolver "${resolverName}" is not allowed by workflow policy`);
+  }
+};
+
 
     const runResolvers = async (action) => {
       const outputs = [];
