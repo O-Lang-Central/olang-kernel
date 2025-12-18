@@ -1,7 +1,7 @@
 // src/parser.js
 
 function parse(code, fileName = null) {
-  // --- New: Enforce .ol extension if filename provided ---
+  // --- Enforce .ol extension if filename provided ---
   if (fileName && !fileName.endsWith(".ol")) {
     throw new Error(`Expected .ol workflow, got: ${fileName}`);
   }
@@ -15,18 +15,30 @@ function parse(code, fileName = null) {
     name: 'Unnamed Workflow',
     parameters: [],
     steps: [],
-    returnValues: []
+    returnValues: [],
+    allowedResolvers: [] // NEW: store allowed resolvers
   };
 
   let i = 0;
   while (i < lines.length) {
     let line = lines[i];
 
-    // ============================
-    // NEW: Detect math operations..
-    // ============================
+    // ---------------------------
+    // NEW: Detect Allow resolvers
+    // ---------------------------
+    const allowMatch = line.match(/^Allow resolvers\s*:\s*$/i);
+    if (allowMatch) {
+      i++;
+      while (i < lines.length && lines[i].startsWith('  ')) {
+        workflow.allowedResolvers.push(lines[i].trim());
+        i++;
+      }
+      continue;
+    }
 
-    // Add X and Y
+    // ============================
+    // Math operations
+    // ============================
     let mathAdd = line.match(/^Add\s+\{(.+?)\}\s+and\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
     if (mathAdd) {
       workflow.steps.push({
@@ -38,7 +50,6 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // Subtract A from B => B - A
     let mathSub = line.match(/^Subtract\s+\{(.+?)\}\s+from\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
     if (mathSub) {
       workflow.steps.push({
@@ -50,7 +61,6 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // Multiply X and Y
     let mathMul = line.match(/^Multiply\s+\{(.+?)\}\s+and\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
     if (mathMul) {
       workflow.steps.push({
@@ -62,7 +72,6 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // Divide A by B
     let mathDiv = line.match(/^Divide\s+\{(.+?)\}\s+by\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
     if (mathDiv) {
       workflow.steps.push({
@@ -74,11 +83,9 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // ====================== END NEW MATH RULES ======================
-
-
-
-    // Workflow
+    // ---------------------------
+    // Workflow definition
+    // ---------------------------
     const wfMatch = line.match(/^Workflow\s+"([^"]+)"(?:\s+with\s+(.+))?/i);
     if (wfMatch) {
       workflow.name = wfMatch[1];
@@ -87,7 +94,9 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // Step
+    // ---------------------------
+    // Steps
+    // ---------------------------
     const stepMatch = line.match(/^Step\s+(\d+)\s*:\s*(.+)$/i);
     if (stepMatch) {
       workflow.steps.push({
@@ -101,7 +110,6 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // Save as
     const saveMatch = line.match(/^Save as\s+(.+)$/i);
     if (saveMatch && workflow.steps.length > 0) {
       workflow.steps[workflow.steps.length - 1].saveAs = saveMatch[1].trim();
@@ -109,7 +117,6 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // Constraint
     const constraintMatch = line.match(/^Constraint:\s*(.+)$/i);
     if (constraintMatch && workflow.steps.length > 0) {
       const lastStep = workflow.steps[workflow.steps.length - 1];
@@ -135,7 +142,9 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // If
+    // ---------------------------
+    // If blocks
+    // ---------------------------
     const ifMatch = line.match(/^If\s+(.+)\s+then$/i);
     if (ifMatch) {
       const condition = ifMatch[1].trim();
@@ -150,7 +159,9 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // Parallel
+    // ---------------------------
+    // Parallel blocks
+    // ---------------------------
     const parMatch = line.match(/^Run in parallel$/i);
     if (parMatch) {
       const steps = [];
@@ -164,7 +175,9 @@ function parse(code, fileName = null) {
       continue;
     }
 
+    // ---------------------------
     // Connect
+    // ---------------------------
     const connMatch = line.match(/^Connect\s+"([^"]+)"\s+using\s+"([^"]+)"$/i);
     if (connMatch) {
       workflow.steps.push({
@@ -176,7 +189,9 @@ function parse(code, fileName = null) {
       continue;
     }
 
+    // ---------------------------
     // Agent uses
+    // ---------------------------
     const agentUseMatch = line.match(/^Agent\s+"([^"]+)"\s+uses\s+"([^"]+)"$/i);
     if (agentUseMatch) {
       workflow.steps.push({
@@ -188,7 +203,9 @@ function parse(code, fileName = null) {
       continue;
     }
 
+    // ---------------------------
     // Debrief
+    // ---------------------------
     const debriefMatch = line.match(/^Debrief\s+(\w+)\s+with\s+"(.+)"$/i);
     if (debriefMatch) {
       workflow.steps.push({
@@ -200,7 +217,9 @@ function parse(code, fileName = null) {
       continue;
     }
 
+    // ---------------------------
     // Evolve
+    // ---------------------------
     const evolveMatch = line.match(/^Evolve\s+(\w+)\s+using\s+feedback:\s+"(.+)"$/i);
     if (evolveMatch) {
       workflow.steps.push({
@@ -212,7 +231,9 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // Prompt
+    // ---------------------------
+    // Prompt user
+    // ---------------------------
     const promptMatch = line.match(/^Prompt user to\s+"(.+)"$/i);
     if (promptMatch) {
       workflow.steps.push({
@@ -224,7 +245,9 @@ function parse(code, fileName = null) {
       continue;
     }
 
+    // ---------------------------
     // Persist
+    // ---------------------------
     const persistMatch = line.match(/^Persist\s+(.+)\s+to\s+"(.+)"$/i);
     if (persistMatch) {
       workflow.steps.push({
@@ -236,7 +259,9 @@ function parse(code, fileName = null) {
       continue;
     }
 
+    // ---------------------------
     // Emit
+    // ---------------------------
     const emitMatch = line.match(/^Emit\s+"(.+)"\s+with\s+(.+)$/i);
     if (emitMatch) {
       workflow.steps.push({
@@ -248,7 +273,9 @@ function parse(code, fileName = null) {
       continue;
     }
 
+    // ---------------------------
     // Return
+    // ---------------------------
     const returnMatch = line.match(/^Return\s+(.+)$/i);
     if (returnMatch) {
       workflow.returnValues = returnMatch[1].split(',').map(v => v.trim());
@@ -256,7 +283,9 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // Use <Tool>
+    // ---------------------------
+    // Use tool
+    // ---------------------------
     const useMatch = line.match(/^Use\s+(.+)$/i);
     if (useMatch) {
       workflow.steps.push({
@@ -269,7 +298,9 @@ function parse(code, fileName = null) {
       continue;
     }
 
-    // Ask <Target>
+    // ---------------------------
+    // Ask target
+    // ---------------------------
     const askMatch = line.match(/^Ask\s+(.+)$/i);
     if (askMatch) {
       workflow.steps.push({
@@ -288,6 +319,9 @@ function parse(code, fileName = null) {
   return workflow;
 }
 
+// ---------------------------
+// Parse nested blocks (If / Parallel)
+// ---------------------------
 function parseBlock(lines) {
   const steps = [];
   let current = null;

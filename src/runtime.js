@@ -1,4 +1,5 @@
 const fs = require('fs');
+const path = require('path');
 
 class RuntimeAPI {
   constructor({ verbose = false } = {}) {
@@ -6,10 +7,22 @@ class RuntimeAPI {
     this.resources = {};
     this.agentMap = {};
     this.events = {};
-    this.workflowSteps = []; // store for evolve lookup
-    this.verbose = verbose; // verbose logging flag
+    this.workflowSteps = [];
+    this.allowedResolvers = null;
+    this.verbose = verbose;
+
+    // Ensure logs folder exists
+    const logsDir = path.resolve('./logs');
+    if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+    this.disallowedLogFile = path.join(logsDir, 'disallowed_resolvers.json');
+
+    // In-memory store for summary
+    this.disallowedAttempts = [];
   }
 
+  // -----------------------------
+  // Event handling
+  // -----------------------------
   on(eventName, cb) {
     if (!this.events[eventName]) this.events[eventName] = [];
     this.events[eventName].push(cb);
@@ -21,6 +34,40 @@ class RuntimeAPI {
     }
   }
 
+  // -----------------------------
+  // Disallowed resolver handling
+  // -----------------------------
+  logDisallowedResolver(resolverName, stepAction) {
+    const entry = {
+      resolver: resolverName,
+      step: stepAction,
+      timestamp: new Date().toISOString()
+    };
+    fs.appendFileSync(this.disallowedLogFile, JSON.stringify(entry) + '\n', 'utf8');
+    this.disallowedAttempts.push(entry);
+
+    if (this.verbose) {
+      console.warn(`[O-Lang] Disallowed resolver blocked: ${resolverName} | step: ${stepAction}`);
+    }
+  }
+
+  printDisallowedSummary() {
+    if (!this.disallowedAttempts.length) return;
+    console.log('\n[O-Lang] ⚠️ Disallowed resolver summary:');
+    console.log(`Total blocked attempts: ${this.disallowedAttempts.length}`);
+    const displayCount = Math.min(5, this.disallowedAttempts.length);
+    console.log(`First ${displayCount} entries:`);
+    this.disallowedAttempts.slice(0, displayCount).forEach((e, i) => {
+      console.log(`${i + 1}. Resolver: ${e.resolver}, Step: ${e.step}, Time: ${e.timestamp}`);
+    });
+    if (this.disallowedAttempts.length > displayCount) {
+      console.log(`...and ${this.disallowedAttempts.length - displayCount} more entries logged in ${this.disallowedLogFile}`);
+    }
+  }
+
+  // -----------------------------
+  // Condition & math utilities
+  // -----------------------------
   evaluateCondition(cond, ctx) {
     cond = cond.trim();
     const eq = cond.match(/^\{(.+)\}\s+equals\s+"(.*)"$/);
@@ -35,16 +82,6 @@ class RuntimeAPI {
   getNested(obj, path) {
     if (!path) return undefined;
     return path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : undefined, obj);
-  }
-
-  findLastSummaryStep() {
-    for (let i = this.workflowSteps.length - 1; i >= 0; i--) {
-      const step = this.workflowSteps[i];
-      if (step.type === 'action' && step.actionRaw?.startsWith('Ask ') && step.saveAs) {
-        return step;
-      }
-    }
-    return null;
   }
 
   mathFunctions = {
@@ -76,9 +113,7 @@ class RuntimeAPI {
 
     const funcNames = Object.keys(this.mathFunctions);
     const safeFunc = {};
-    funcNames.forEach(fn => {
-      safeFunc[fn] = this.mathFunctions[fn];
-    });
+    funcNames.forEach(fn => safeFunc[fn] = this.mathFunctions[fn]);
 
     try {
       const f = new Function(...funcNames, `return ${expr};`);
@@ -89,18 +124,37 @@ class RuntimeAPI {
     }
   }
 
-  // --------------------------
-  // Execute workflow step
-  // --------------------------
+  findLastSummaryStep() {
+    for (let i = this.workflowSteps.length - 1; i >= 0; i--) {
+      const step = this.workflowSteps[i];
+      if (step.type === 'action' && step.actionRaw?.startsWith('Ask ') && step.saveAs) {
+        return step;
+      }
+    }
+    return null;
+  }
+
+  // -----------------------------
+  // Step execution
+  // -----------------------------
   async executeStep(step, agentResolver) {
     const stepType = step.type;
 
-    // Helper: execute all resolvers for this step action
+    const validateResolver = (resolver) => {
+      const resolverName = resolver?.name || resolver?.resolverName;
+      if (!resolverName) throw new Error('[O-Lang] Resolver missing name metadata');
+      if (!this.allowedResolvers.has(resolverName)) {
+        this.logDisallowedResolver(resolverName, step.actionRaw || step.tool || step.target);
+        throw new Error(`[O-Lang] Resolver "${resolverName}" is not allowed by workflow policy`);
+      }
+    };
+
     const runAllResolvers = async (action) => {
       const outputs = [];
       if (agentResolver && Array.isArray(agentResolver._chain)) {
         for (let idx = 0; idx < agentResolver._chain.length; idx++) {
           const resolver = agentResolver._chain[idx];
+          validateResolver(resolver);
           try {
             const out = await resolver(action, this.context);
             outputs.push(out);
@@ -111,11 +165,12 @@ class RuntimeAPI {
           }
         }
       } else {
+        validateResolver(agentResolver);
         const out = await agentResolver(action, this.context);
         outputs.push(out);
         this.context['__resolver_0'] = out;
       }
-      return outputs[outputs.length - 1]; // last result as primary
+      return outputs[outputs.length - 1];
     };
 
     switch (stepType) {
@@ -125,13 +180,11 @@ class RuntimeAPI {
         if (step.saveAs) this.context[step.saveAs] = result;
         break;
       }
-
       case 'action': {
         const action = step.actionRaw.replace(/\{([^\}]+)\}/g, (_, path) => {
           const value = this.getNested(this.context, path.trim());
           return value !== undefined ? String(value) : `{${path}}`;
         });
-
         const mathCall = action.match(/^(add|subtract|multiply|divide|sum|avg|min|max|round|floor|ceil|abs)\((.*)\)$/i);
         if (mathCall) {
           const fn = mathCall[1].toLowerCase();
@@ -148,97 +201,79 @@ class RuntimeAPI {
             break;
           }
         }
-
         const res = await runAllResolvers(action);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;
       }
-
       case 'use': {
         const res = await runAllResolvers(`Use ${step.tool}`);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;
       }
-
       case 'ask': {
         const res = await runAllResolvers(`Ask ${step.target}`);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;
       }
-
       case 'if': {
         if (this.evaluateCondition(step.condition, this.context)) {
           for (const s of step.body) await this.executeStep(s, agentResolver);
         }
         break;
       }
-
       case 'parallel': {
         await Promise.all(step.steps.map(s => this.executeStep(s, agentResolver)));
         break;
       }
-
       case 'connect': {
         this.resources[step.resource] = step.endpoint;
         break;
       }
-
       case 'agent_use': {
         this.agentMap[step.logicalName] = step.resource;
         break;
       }
-
       case 'debrief': {
         this.emit('debrief', { agent: step.agent, message: step.message });
         break;
       }
-
       case 'evolve': {
         const maxGen = step.constraints?.max_generations || 1;
         if (maxGen < 1) {
           this.context['improved_summary'] = this.context['summary'] || '';
           return;
         }
-
         const summaryStep = this.findLastSummaryStep();
         if (!summaryStep) {
           console.warn('[O-Lang] Evolve: No prior "Ask ... Save as" step found to evolve');
           this.context['improved_summary'] = this.context['summary'] || '';
           return;
         }
-
         const varName = summaryStep.saveAs;
         let currentOutput = this.context[varName] || '';
-
         for (let attempt = 0; attempt < maxGen; attempt++) {
           let revisedAction = summaryStep.actionRaw.replace(/\{([^\}]+)\}/g, (_, path) => {
             const val = this.getNested(this.context, path.trim());
             return val !== undefined ? String(val) : `{${path}}`;
           });
-
           if (step.feedback) {
             revisedAction = revisedAction.replace(/(")$/, `\n\n[IMPROVEMENT FEEDBACK: ${step.feedback}]$1`);
           }
-
           currentOutput = await runAllResolvers(revisedAction);
           this.context[varName] = currentOutput;
-
           this.emit('debrief', {
             agent: step.agent || 'Evolver',
             message: `Evolve attempt ${attempt + 1}/${maxGen}: ${currentOutput.substring(0, 80)}...`
           });
         }
-
         this.context['improved_summary'] = currentOutput;
         break;
       }
-
       case 'prompt': {
         const input = await this.getUserInput(step.question);
         if (step.saveAs) this.context[step.saveAs] = input;
         break;
       }
-
       case 'persist': {
         const val = this.context[step.variable];
         if (val !== undefined) {
@@ -246,7 +281,6 @@ class RuntimeAPI {
         }
         break;
       }
-
       case 'emit': {
         const payload = step.payload ? this.getNested(this.context, step.payload) : undefined;
         this.emit(step.event, payload || step.payload);
@@ -254,7 +288,6 @@ class RuntimeAPI {
       }
     }
 
-    // Verbose logging of context after each step
     if (this.verbose) {
       console.log(`\n[Step: ${step.type} | saveAs: ${step.saveAs || 'N/A'}]`);
       console.log(JSON.stringify(this.context, null, 2));
@@ -275,10 +308,14 @@ class RuntimeAPI {
   async executeWorkflow(workflow, inputs, agentResolver) {
     this.context = { ...inputs };
     this.workflowSteps = workflow.steps;
+    this.allowedResolvers = new Set(workflow.allowedResolvers || []);
 
     for (const step of workflow.steps) {
       await this.executeStep(step, agentResolver);
     }
+
+    // Print disallowed resolver summary at the end
+    this.printDisallowedSummary();
 
     const result = {};
     for (const key of workflow.returnValues) {
