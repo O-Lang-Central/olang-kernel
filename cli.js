@@ -86,8 +86,14 @@ function createResolverChain(resolvers, verbose = false) {
   return wrapped;
 }
 
+/**
+ * Load a single resolver — NO fallback to defaultMockResolver
+ */
 function loadSingleResolver(specifier) {
-  if (!specifier) return defaultMockResolver;
+  // ❌ Remove fallback: do NOT return defaultMockResolver
+  if (!specifier) {
+    throw new Error('Empty resolver specifier provided');
+  }
   try {
     const resolver = require(specifier);
     if (typeof resolver !== 'function') throw new Error(`Resolver must export a function`);
@@ -186,9 +192,16 @@ program
         console.log(' 📄  Parsed Workflow:', JSON.stringify(workflow, null, 2));
       }
 
-      // ✅ Pass allowedResolvers to loadResolverChain
       const allowedSet = new Set(workflow.allowedResolvers.map(r => r.trim()));
       const resolver = loadResolverChain(options.resolver, options.verbose, allowedSet);
+
+      // 🔔 Warn if allowed resolvers declared but none loaded
+      if (workflow.allowedResolvers.length > 0 && resolver._chain.length === 0) {
+        console.warn(
+          `\n⚠️  Warning: Workflow allows [${workflow.allowedResolvers.join(', ')}],\n` +
+          `   but no matching resolvers were loaded. Use -r <path> to provide them.\n`
+        );
+      }
 
       const result = await execute(workflow, options.input, resolver, options.verbose);
       console.log('\n=== Workflow Result ===');
