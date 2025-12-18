@@ -106,41 +106,72 @@ function parse(code, fileName = null) {
       continue;
     }
 
+// ---------------------------
+// Return statement (updated: auto-detect math)
+// ---------------------------
+const returnMatch = line.match(/^Return\s+(.+)$/i);
+if (returnMatch) {
+  const returns = returnMatch[1].split(',').map(v => v.trim());
+  workflow.returnValues = returns;
+
+  // --- Check if any return vars come from math steps ---
+  for (const retVar of returns) {
+    const producedByMath = workflow.steps.some(
+      s => s.saveAs === retVar && s.type === 'calculate'
+    );
+    if (producedByMath) workflow.__requiresMath = true;
+  }
+
+  i++;
+  continue;
+}
+
+
     // ---------------------------
-    // Return statement (smart math detection)
-    // ---------------------------
-    const returnMatch = line.match(/^Return\s+(.+)$/i);
-    if (returnMatch) {
-      workflow.returnValues = returnMatch[1].split(',').map(v => v.trim());
-      workflow.returnValues.forEach(v => {
-        if (v.match(/[A-Z][A-Za-z0-9_]*/)) workflow.__requiresMath = true;
-      });
-      i++;
-      continue;
+// Steps (updated: auto-detect math + saveAs)
+// ---------------------------
+const stepMatch = line.match(/^Step\s+(\d+)\s*:\s*(.+)$/i);
+if (stepMatch) {
+  const stepNum = parseInt(stepMatch[1], 10);
+  const raw = stepMatch[2].trim();
+
+  // --- Detect math inside Step ---
+  let mathDetected = null;
+  let expr = '';
+  let saveVar = null;
+
+  const mathOps = [
+    { re: /^Add\s+\{(.+?)\}\s+and\s+\{(.+?)\}\s+Save as\s+(.+)$/i, fn: 'add' },
+    { re: /^Subtract\s+\{(.+?)\}\s+from\s+\{(.+?)\}\s+Save as\s+(.+)$/i, fn: 'subtract' },
+    { re: /^Multiply\s+\{(.+?)\}\s+and\s+\{(.+?)\}\s+Save as\s+(.+)$/i, fn: 'multiply' },
+    { re: /^Divide\s+\{(.+?)\}\s+by\s+\{(.+?)\}\s+Save as\s+(.+)$/i, fn: 'divide' }
+  ];
+
+  for (const op of mathOps) {
+    const m = raw.match(op.re);
+    if (m) {
+      mathDetected = op.fn;
+      saveVar = m[3].trim();
+      if (op.fn === 'subtract') expr = `subtract({${m[2]}}, {${m[1]}})`;
+      else expr = `${op.fn}({${m[1]}}, {${m[2]}})`;
+      break;
     }
+  }
 
-    // ---------------------------
-    // Steps (smart math detection)
-    // ---------------------------
-    const stepMatch = line.match(/^Step\s+(\d+)\s*:\s*(.+)$/i);
-    if (stepMatch) {
-      const step = {
-        type: 'action',
-        stepNumber: parseInt(stepMatch[1], 10),
-        actionRaw: stepMatch[2].trim(),
-        saveAs: null,
-        constraints: {}
-      };
+  if (mathDetected) workflow.__requiresMath = true;
 
-      workflow.steps.push(step);
+  workflow.steps.push({
+    type: mathDetected ? 'calculate' : 'action',
+    stepNumber: stepNum,
+    actionRaw: mathDetected ? null : raw,
+    expression: mathDetected ? expr : undefined,
+    saveAs: saveVar,
+    constraints: {}
+  });
 
-      if (step.actionRaw.match(/\{[A-Za-z_][A-Za-z0-9_]*\}/)) {
-        workflow.__requiresMath = true;
-      }
-
-      i++;
-      continue;
-    }
+  i++;
+  continue;
+}
 
     const saveMatch = line.match(/^Save as\s+(.+)$/i);
     if (saveMatch && workflow.steps.length > 0) {
