@@ -22,7 +22,6 @@ function ensureOlExtension(filename) {
  */
 async function defaultMockResolver(action, context) {
   if (!action || typeof action !== 'string') return `[Unhandled: ${String(action)}]`;
-
   if (action.startsWith('Search for ')) {
     return {
       title: "HR Policy 2025",
@@ -30,45 +29,38 @@ async function defaultMockResolver(action, context) {
       url: "mock://hr-policy"
     };
   }
-
   if (action.startsWith('Ask ')) {
-    return "✅ [Mock] Summarized for demonstration.";
+    return " ✅  [Mock] Summarized for demonstration.";
   }
-
   if (action.startsWith('Notify ')) {
     const recipient = action.match(/Notify (\S+)/)?.[1] || 'user@example.com';
-    return `📬 Notification sent to ${recipient}`;
+    return ` 📬  Notification sent to ${recipient}`;
   }
-
   if (action.startsWith('Debrief ') || action.startsWith('Evolve ')) {
     console.log(`[O-Lang] ${action}`);
     return 'Acknowledged';
   }
-
   return `[Unhandled: ${action}]`;
 }
+defaultMockResolver.resolverName = 'defaultMockResolver';
 
 /**
  * Built-in Math Resolver
  */
 async function builtInMathResolver(action, context) {
   if (!action || typeof action !== 'string') return null;
-
   const a = action.replace(/\{([^\}]+)\}/g, (_, k) => {
     const v = context[k.trim()];
     return v !== undefined ? v : `{${k}}`;
   });
-
   let m;
   m = a.match(/^add\(([^,]+),\s*([^)]+)\)$/i); if (m) return parseFloat(m[1]) + parseFloat(m[2]);
   m = a.match(/^subtract\(([^,]+),\s*([^)]+)\)$/i); if (m) return parseFloat(m[1]) - parseFloat(m[2]);
   m = a.match(/^multiply\(([^,]+),\s*([^)]+)\)$/i); if (m) return parseFloat(m[1]) * parseFloat(m[2]);
   m = a.match(/^divide\(([^,]+),\s*([^)]+)\)$/i); if (m) return parseFloat(m[1]) / parseFloat(m[2]);
   m = a.match(/^sum\(\s*\[([^\]]+)\]\s*\)$/i); if (m) return m[1].split(',').map(s => parseFloat(s.trim())).reduce((s, v) => s + v, 0);
-
   return null;
 }
-// Add resolver metadata so workflow policy recognizes it
 builtInMathResolver.resolverName = 'builtInMathResolver';
 
 /**
@@ -84,7 +76,7 @@ function createResolverChain(resolvers, verbose = false) {
         context[`__resolver_${i}`] = res;
         lastResult = res;
       } catch (e) {
-        console.error(`❌ Resolver ${i} failed for action "${action}":`, e.message);
+        console.error(` ❌  Resolver ${i} failed for action "${action}":`, e.message);
       }
     }
     if (verbose) console.log(`[Resolver Chain] action="${action}" lastResult=`, lastResult);
@@ -96,17 +88,16 @@ function createResolverChain(resolvers, verbose = false) {
 
 function loadSingleResolver(specifier) {
   if (!specifier) return defaultMockResolver;
-
   try {
     const resolver = require(specifier);
     if (typeof resolver !== 'function') throw new Error(`Resolver must export a function`);
-    console.log(`📦 Loaded resolver: ${specifier}`);
+    console.log(` 📦  Loaded resolver: ${specifier}`);
     return resolver;
   } catch (e1) {
     try {
       const absolutePath = path.resolve(process.cwd(), specifier);
       const resolver = require(absolutePath);
-      console.log(`📁 Loaded resolver: ${absolutePath}`);
+      console.log(` 📁  Loaded resolver: ${absolutePath}`);
       return resolver;
     } catch (e2) {
       throw new Error(
@@ -117,16 +108,40 @@ function loadSingleResolver(specifier) {
 }
 
 /**
- * loadResolverChain: include built-in math resolver first, then user resolvers, then default mock resolver
+ * ✅ POLICY-AWARE resolver loader: only includes resolvers in allowedResolvers
  */
-function loadResolverChain(specifiers, verbose = false) {
+function loadResolverChain(specifiers, verbose = false, allowedResolvers = new Set()) {
   const userResolvers = specifiers?.map(loadSingleResolver) || [];
-  const resolvers = [builtInMathResolver, ...userResolvers, defaultMockResolver];
+  const resolvers = [];
 
-  if (!specifiers || specifiers.length === 0) {
-    console.log('ℹ️ No resolver provided. Using built-in math + default mock resolver.');
+  // Only add builtInMathResolver if allowed
+  if (allowedResolvers.has('builtInMathResolver')) {
+    resolvers.push(builtInMathResolver);
+  }
+
+  // Add user resolvers only if their name is allowed
+  for (const r of userResolvers) {
+    const name = r.resolverName || r.name || 'unknown';
+    if (allowedResolvers.has(name)) {
+      resolvers.push(r);
+    } else if (verbose) {
+      console.warn(` ⚠️  Skipping disallowed user resolver: ${name}`);
+    }
+  }
+
+  // Only add defaultMockResolver if explicitly allowed
+  if (allowedResolvers.has('defaultMockResolver')) {
+    resolvers.push(defaultMockResolver);
+  }
+
+  if (resolvers.length === 0) {
+    if (verbose) {
+      console.warn(' ⚠️  No allowed resolvers loaded. Actions may fail.');
+    }
   } else {
-    console.log(`📦 Loaded user resolvers: ${specifiers.join(', ')}`);
+    if (verbose) {
+      console.log(` ℹ️  Loaded allowed resolvers: ${resolvers.map(r => r.resolverName || 'anonymous').join(', ')}`);
+    }
   }
 
   return createResolverChain(resolvers, verbose);
@@ -136,7 +151,6 @@ function loadResolverChain(specifiers, verbose = false) {
  * CLI Setup
  */
 const program = new Command();
-
 program
   .name('olang')
   .description('O-Lang CLI: run .ol workflows with rule-enforced agent governance')
@@ -162,27 +176,25 @@ program
   .action(async (file, options) => {
     try {
       ensureOlExtension(file);
-
       const content = fs.readFileSync(file, 'utf8');
-      const workflow = parse(content);
-
+      const workflow = parse(content, file);
       if (!workflow || typeof workflow !== 'object') {
-        console.error('❌ Error: Parsed workflow is invalid or empty');
+        console.error(' ❌  Error: Parsed workflow is invalid or empty');
         process.exit(1);
       }
-
       if (options.verbose) {
-        console.log('📄 Parsed Workflow:', JSON.stringify(workflow, null, 2));
+        console.log(' 📄  Parsed Workflow:', JSON.stringify(workflow, null, 2));
       }
 
-      const resolver = loadResolverChain(options.resolver, options.verbose);
+      // ✅ Pass allowedResolvers to loadResolverChain
+      const allowedSet = new Set(workflow.allowedResolvers.map(r => r.trim()));
+      const resolver = loadResolverChain(options.resolver, options.verbose, allowedSet);
 
       const result = await execute(workflow, options.input, resolver, options.verbose);
-
       console.log('\n=== Workflow Result ===');
       console.log(JSON.stringify(result, null, 2));
     } catch (err) {
-      console.error('❌ Error:', err.message);
+      console.error(' ❌  Error:', err.message);
       process.exit(1);
     }
   });
