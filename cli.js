@@ -90,27 +90,39 @@ function createResolverChain(resolvers, verbose = false) {
  * Load a single resolver — NO fallback to defaultMockResolver
  */
 function loadSingleResolver(specifier) {
-  // ❌ Remove fallback: do NOT return defaultMockResolver
   if (!specifier) {
     throw new Error('Empty resolver specifier provided');
   }
+
+  let resolver;
   try {
-    const resolver = require(specifier);
-    if (typeof resolver !== 'function') throw new Error(`Resolver must export a function`);
-    console.log(` 📦  Loaded resolver: ${specifier}`);
-    return resolver;
+    resolver = require(specifier);
   } catch (e1) {
     try {
       const absolutePath = path.resolve(process.cwd(), specifier);
-      const resolver = require(absolutePath);
+      resolver = require(absolutePath);
       console.log(` 📁  Loaded resolver: ${absolutePath}`);
-      return resolver;
     } catch (e2) {
       throw new Error(
         `Failed to load resolver '${specifier}':\n  npm: ${e1.message}\n  file: ${e2.message}`
       );
     }
   }
+
+  if (typeof resolver !== 'function') {
+    throw new Error(`Resolver must export a function`);
+  }
+
+  // ✅ Enforce that resolvers self-identify
+  if (!resolver.resolverName || typeof resolver.resolverName !== 'string') {
+    throw new Error(
+      `Resolver from '${specifier}' is missing a valid .resolverName property.\n` +
+      `All O-Lang resolvers must export: \`module.exports.resolverName = "MyResolver";\``
+    );
+  }
+
+  console.log(` 📦  Loaded resolver: ${specifier} (name: ${resolver.resolverName})`);
+  return resolver;
 }
 
 /**
