@@ -8,16 +8,27 @@ class RuntimeAPI {
     this.agentMap = {};
     this.events = {};
     this.workflowSteps = [];
-    this.allowedResolvers = null;
+    this.allowedResolvers = new Set();
     this.verbose = verbose;
+    this.__warnings = [];
 
-    // Ensure logs folder exists
     const logsDir = path.resolve('./logs');
     if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
     this.disallowedLogFile = path.join(logsDir, 'disallowed_resolvers.json');
-
-    // In-memory store for summary
     this.disallowedAttempts = [];
+  }
+
+  // -----------------------------
+  // Parser/runtime warnings
+  // -----------------------------
+  addWarning(message) {
+    const entry = { message, timestamp: new Date().toISOString() };
+    this.__warnings.push(entry);
+    if (this.verbose) console.warn(`[O-Lang WARNING] ${message}`);
+  }
+
+  getWarnings() {
+    return this.__warnings;
   }
 
   // -----------------------------
@@ -38,11 +49,7 @@ class RuntimeAPI {
   // Disallowed resolver handling
   // -----------------------------
   logDisallowedResolver(resolverName, stepAction) {
-    const entry = {
-      resolver: resolverName,
-      step: stepAction,
-      timestamp: new Date().toISOString()
-    };
+    const entry = { resolver: resolverName, step: stepAction, timestamp: new Date().toISOString() };
     fs.appendFileSync(this.disallowedLogFile, JSON.stringify(entry) + '\n', 'utf8');
     this.disallowedAttempts.push(entry);
 
@@ -56,7 +63,6 @@ class RuntimeAPI {
     console.log('\n[O-Lang] ⚠️ Disallowed resolver summary:');
     console.log(`Total blocked attempts: ${this.disallowedAttempts.length}`);
     const displayCount = Math.min(5, this.disallowedAttempts.length);
-    console.log(`First ${displayCount} entries:`);
     this.disallowedAttempts.slice(0, displayCount).forEach((e, i) => {
       console.log(`${i + 1}. Resolver: ${e.resolver}, Step: ${e.step}, Time: ${e.timestamp}`);
     });
@@ -66,8 +72,13 @@ class RuntimeAPI {
   }
 
   // -----------------------------
-  // Condition & math utilities
+  // Utilities
   // -----------------------------
+  getNested(obj, path) {
+    if (!path) return undefined;
+    return path.split('.').reduce((o, k) => (o && o[k] !== undefined ? o[k] : undefined), obj);
+  }
+
   evaluateCondition(cond, ctx) {
     cond = cond.trim();
     const eq = cond.match(/^\{(.+)\}\s+equals\s+"(.*)"$/);
@@ -77,11 +88,6 @@ class RuntimeAPI {
     const lt = cond.match(/^\{(.+)\}\s+less than\s+(\d+\.?\d*)$/);
     if (lt) return parseFloat(this.getNested(ctx, lt[1])) < parseFloat(lt[2]);
     return Boolean(this.getNested(ctx, cond.replace(/\{|\}/g, '')));
-  }
-
-  getNested(obj, path) {
-    if (!path) return undefined;
-    return path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : undefined, obj);
   }
 
   mathFunctions = {
@@ -119,7 +125,7 @@ class RuntimeAPI {
       const f = new Function(...funcNames, `return ${expr};`);
       return f(...funcNames.map(fn => safeFunc[fn]));
     } catch (e) {
-      console.warn(`[O-Lang] Failed to evaluate math expression "${expr}": ${e.message}`);
+      this.addWarning(`Failed to evaluate math expression "${expr}": ${e.message}`);
       return 0;
     }
   }
@@ -127,9 +133,7 @@ class RuntimeAPI {
   findLastSummaryStep() {
     for (let i = this.workflowSteps.length - 1; i >= 0; i--) {
       const step = this.workflowSteps[i];
-      if (step.type === 'action' && step.actionRaw?.startsWith('Ask ') && step.saveAs) {
-        return step;
-      }
+      if (step.type === 'action' && step.actionRaw?.startsWith('Ask ') && step.saveAs) return step;
     }
     return null;
   }
@@ -149,7 +153,7 @@ class RuntimeAPI {
       }
     };
 
-    const runAllResolvers = async (action) => {
+    const runResolvers = async (action) => {
       const outputs = [];
       if (agentResolver && Array.isArray(agentResolver._chain)) {
         for (let idx = 0; idx < agentResolver._chain.length; idx++) {
@@ -160,7 +164,7 @@ class RuntimeAPI {
             outputs.push(out);
             this.context[`__resolver_${idx}`] = out;
           } catch (e) {
-            console.error(`❌ Resolver ${idx} error for action "${action}":`, e.message);
+            this.addWarning(`Resolver ${resolver?.name || idx} failed for action "${action}": ${e.message}`);
             outputs.push(null);
           }
         }
@@ -173,10 +177,10 @@ class RuntimeAPI {
       return outputs[outputs.length - 1];
     };
 
+    // --- execute based on step.type ---
     switch (stepType) {
       case 'calculate': {
-        const expr = step.expression || step.actionRaw;
-        const result = this.evaluateMath(expr);
+        const result = this.evaluateMath(step.expression || step.actionRaw);
         if (step.saveAs) this.context[step.saveAs] = result;
         break;
       }
@@ -185,6 +189,7 @@ class RuntimeAPI {
           const value = this.getNested(this.context, path.trim());
           return value !== undefined ? String(value) : `{${path}}`;
         });
+
         const mathCall = action.match(/^(add|subtract|multiply|divide|sum|avg|min|max|round|floor|ceil|abs)\((.*)\)$/i);
         if (mathCall) {
           const fn = mathCall[1].toLowerCase();
@@ -192,8 +197,7 @@ class RuntimeAPI {
           const args = argsRaw.split(',').map(s => s.trim()).map(s => {
             if (/^".*"$/.test(s) || /^'.*'$/.test(s)) return s.slice(1, -1);
             if (!isNaN(s)) return parseFloat(s);
-            const lookup = s.replace(/^\{|\}$/g, '').trim();
-            return this.getNested(this.context, lookup);
+            return this.getNested(this.context, s.replace(/^\{|\}$/g, '').trim());
           });
           if (this.mathFunctions[fn]) {
             const value = this.mathFunctions[fn](...args);
@@ -201,17 +205,18 @@ class RuntimeAPI {
             break;
           }
         }
-        const res = await runAllResolvers(action);
+
+        const res = await runResolvers(action);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;
       }
       case 'use': {
-        const res = await runAllResolvers(`Use ${step.tool}`);
+        const res = await runResolvers(`Use ${step.tool}`);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;
       }
       case 'ask': {
-        const res = await runAllResolvers(`Ask ${step.target}`);
+        const res = await runResolvers(`Ask ${step.target}`);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;
       }
@@ -239,14 +244,10 @@ class RuntimeAPI {
       }
       case 'evolve': {
         const maxGen = step.constraints?.max_generations || 1;
-        if (maxGen < 1) {
-          this.context['improved_summary'] = this.context['summary'] || '';
-          return;
-        }
+        if (maxGen < 1) return;
         const summaryStep = this.findLastSummaryStep();
         if (!summaryStep) {
-          console.warn('[O-Lang] Evolve: No prior "Ask ... Save as" step found to evolve');
-          this.context['improved_summary'] = this.context['summary'] || '';
+          this.addWarning('Evolve step has no prior "Ask ... Save as" step to evolve');
           return;
         }
         const varName = summaryStep.saveAs;
@@ -256,10 +257,8 @@ class RuntimeAPI {
             const val = this.getNested(this.context, path.trim());
             return val !== undefined ? String(val) : `{${path}}`;
           });
-          if (step.feedback) {
-            revisedAction = revisedAction.replace(/(")$/, `\n\n[IMPROVEMENT FEEDBACK: ${step.feedback}]$1`);
-          }
-          currentOutput = await runAllResolvers(revisedAction);
+          if (step.feedback) revisedAction += `\n[IMPROVEMENT FEEDBACK: ${step.feedback}]`;
+          currentOutput = await runResolvers(revisedAction);
           this.context[varName] = currentOutput;
           this.emit('debrief', {
             agent: step.agent || 'Evolver',
@@ -276,9 +275,7 @@ class RuntimeAPI {
       }
       case 'persist': {
         const val = this.context[step.variable];
-        if (val !== undefined) {
-          fs.appendFileSync(step.target, JSON.stringify(val) + '\n', 'utf8');
-        }
+        if (val !== undefined) fs.appendFileSync(step.target, JSON.stringify(val) + '\n', 'utf8');
         break;
       }
       case 'emit': {
@@ -310,12 +307,16 @@ class RuntimeAPI {
     this.workflowSteps = workflow.steps;
     this.allowedResolvers = new Set(workflow.allowedResolvers || []);
 
-    for (const step of workflow.steps) {
-      await this.executeStep(step, agentResolver);
-    }
+    for (const step of workflow.steps) await this.executeStep(step, agentResolver);
 
-    // Print disallowed resolver summary at the end
     this.printDisallowedSummary();
+
+    if (this.__warnings.length) {
+      console.log(`\n[O-Lang] ⚠️ Parser/Runtime Warnings (${this.__warnings.length}):`);
+      this.__warnings.slice(0, 5).forEach((w, i) => {
+        console.log(`${i + 1}. ${w.timestamp} | ${w.message}`);
+      });
+    }
 
     const result = {};
     for (const key of workflow.returnValues) {
