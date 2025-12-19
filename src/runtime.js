@@ -244,28 +244,43 @@ class RuntimeAPI {
         this.allowedResolvers.add('builtInMathResolver');
       }
 
+      // Handle different resolver input formats
+      let resolversToRun = [];
+      
       if (agentResolver && Array.isArray(agentResolver._chain)) {
-        for (let idx = 0; idx < agentResolver._chain.length; idx++) {
-          const resolver = agentResolver._chain[idx];
-          validateResolver(resolver);
-
-          try {
-            const out = await resolver(action, this.context);
-            outputs.push(out);
-            this.context[`__resolver_${idx}`] = out;
-          } catch (e) {
-            this.addWarning(`Resolver ${resolver?.name || idx} failed for action "${action}": ${e.message}`);
-            outputs.push(null);
-          }
-        }
-      } else {
-        validateResolver(agentResolver);
-        const out = await agentResolver(action, this.context);
-        outputs.push(out);
-        this.context['__resolver_0'] = out;
+        // Resolver chain mode
+        resolversToRun = agentResolver._chain;
+      } else if (Array.isArray(agentResolver)) {
+        // Array of resolvers mode (what npx olang passes with -r flags)
+        resolversToRun = agentResolver;
+      } else if (agentResolver) {
+        // Single resolver mode
+        resolversToRun = [agentResolver];
       }
 
-      return outputs[outputs.length - 1];
+      // ✅ Return the FIRST resolver that returns a non-undefined result
+      for (let idx = 0; idx < resolversToRun.length; idx++) {
+        const resolver = resolversToRun[idx];
+        validateResolver(resolver);
+
+        try {
+          const out = await resolver(action, this.context);
+          outputs.push(out);
+          this.context[`__resolver_${idx}`] = out;
+          
+          // ✅ If resolver handled the action (returned non-undefined), use it immediately
+          if (out !== undefined) {
+            return out;
+          }
+        } catch (e) {
+          this.addWarning(`Resolver ${resolver?.resolverName || resolver?.name || idx} failed for action "${action}": ${e.message}`);
+          outputs.push(null);
+          this.context[`__resolver_${idx}`] = null;
+        }
+      }
+
+      // If no resolver handled the action, return undefined
+      return undefined;
     };
 
     switch (stepType) {
@@ -403,7 +418,7 @@ class RuntimeAPI {
               const db = this.dbClient.client.db(process.env.DB_NAME || 'olang');
               await db.collection(step.collection).insertOne({
                 workflow_name: this.context.workflow_name || 'unknown',
-                 sourceValue,
+                data: sourceValue,
                 created_at: new Date()
               });
               break;
