@@ -16,6 +16,80 @@ class RuntimeAPI {
     if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
     this.disallowedLogFile = path.join(logsDir, 'disallowed_resolvers.json');
     this.disallowedAttempts = [];
+
+    // ✅ NEW: Database client setup
+    this.dbClient = null;
+    this._initDbClient();
+  }
+
+  // ✅ NEW: Initialize database client
+  _initDbClient() {
+    const dbType = process.env.OLANG_DB_TYPE; // 'postgres', 'mysql', 'mongodb', 'sqlite'
+    
+    if (!dbType) return; // DB persistence disabled
+
+    try {
+      switch (dbType.toLowerCase()) {
+        case 'postgres':
+        case 'postgresql':
+          const { Pool } = require('pg');
+          this.dbClient = {
+            type: 'postgres',
+            client: new Pool({
+              host: process.env.DB_HOST || 'localhost',
+              port: parseInt(process.env.DB_PORT) || 5432,
+              user: process.env.DB_USER,
+              password: process.env.DB_PASSWORD,
+              database: process.env.DB_NAME
+            })
+          };
+          break;
+          
+        case 'mysql':
+          const mysql = require('mysql2/promise');
+          this.dbClient = {
+            type: 'mysql',
+            client: mysql.createPool({
+              host: process.env.DB_HOST || 'localhost',
+              port: parseInt(process.env.DB_PORT) || 3306,
+              user: process.env.DB_USER,
+              password: process.env.DB_PASSWORD,
+              database: process.env.DB_NAME
+            })
+          };
+          break;
+          
+        case 'mongodb':
+          const { MongoClient } = require('mongodb');
+          const uri = process.env.MONGO_URI || `mongodb://${process.env.DB_HOST || 'localhost'}:${process.env.DB_PORT || 27017}`;
+          this.dbClient = {
+            type: 'mongodb',
+            client: new MongoClient(uri)
+          };
+          break;
+          
+        case 'sqlite':
+          const Database = require('better-sqlite3');
+          const dbPath = process.env.SQLITE_PATH || './olang.db';
+          const dbDir = path.dirname(path.resolve(dbPath));
+          if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+          this.dbClient = {
+            type: 'sqlite',
+            client: new Database(dbPath)
+          };
+          break;
+          
+        default:
+          throw new Error(`Unsupported database type: ${dbType}`);
+      }
+      
+      if (this.verbose) {
+        console.log(`🗄️  Database client initialized: ${dbType}`);
+      }
+    } catch (e) {
+      this.addWarning(`Failed to initialize DB client: ${e.message}`);
+      this.dbClient = null;
+    }
   }
 
   // -----------------------------
@@ -86,7 +160,7 @@ class RuntimeAPI {
     const gt = cond.match(/^\{(.+)\}\s+greater than\s+(\d+\.?\d*)$/);
     if (gt) return parseFloat(this.getNested(ctx, gt[1])) > parseFloat(gt[2]);
     const lt = cond.match(/^\{(.+)\}\s+less than\s+(\d+\.?\d*)$/);
-    if (lt) return parseFloat(this.getNested(ctx, lt[1])) < parseFloat(gt[2]);
+    if (lt) return parseFloat(this.getNested(ctx, lt[1])) < parseFloat(lt[2]);
     return Boolean(this.getNested(ctx, cond.replace(/\{|\}/g, '')));
   }
 
@@ -265,6 +339,95 @@ class RuntimeAPI {
         this.emit('debrief', { agent: step.agent, message: step.message });
         break;
       }
+
+      // ✅ File Persist step handler
+      case 'persist': {
+        const sourceValue = this.getNested(this.context, step.source);
+        if (sourceValue === undefined) {
+          this.addWarning(`Cannot persist undefined value from "${step.source}" to "${step.destination}"`);
+          break;
+        }
+
+        const outputPath = path.resolve(process.cwd(), step.destination);
+        const outputDir = path.dirname(outputPath);
+        if (!fs.existsSync(outputDir)) {
+          fs.mkdirSync(outputDir, { recursive: true });
+        }
+
+        let content;
+        if (step.destination.endsWith('.json')) {
+          content = JSON.stringify(sourceValue, null, 2);
+        } else {
+          content = String(sourceValue);
+        }
+
+        fs.writeFileSync(outputPath, content, 'utf8');
+
+        if (this.verbose) {
+          console.log(`💾 Persisted "${step.source}" to ${step.destination}`);
+        }
+        break;
+      }
+
+      // ✅ NEW: Database persist handler
+      case 'persist-db': {
+        if (!this.dbClient) {
+          this.addWarning(`DB persistence skipped (no DB configured). Set OLANG_DB_TYPE env var.`);
+          break;
+        }
+
+        const sourceValue = this.getNested(this.context, step.source);
+        if (sourceValue === undefined) {
+          this.addWarning(`Cannot persist undefined value from "${step.source}" to DB collection "${step.collection}"`);
+          break;
+        }
+
+        try {
+          switch (this.dbClient.type) {
+            case 'postgres':
+            case 'mysql':
+              if (this.dbClient.type === 'postgres') {
+                await this.dbClient.client.query(
+                  `INSERT INTO "${step.collection}" (workflow_name, data, created_at) VALUES ($1, $2, NOW())`,
+                  [this.context.workflow_name || 'unknown', JSON.stringify(sourceValue)]
+                );
+              } else {
+                await this.dbClient.client.execute(
+                  `INSERT INTO ?? (workflow_name, data, created_at) VALUES (?, ?, NOW())`,
+                  [step.collection, this.context.workflow_name || 'unknown', JSON.stringify(sourceValue)]
+                );
+              }
+              break;
+              
+            case 'mongodb':
+              const db = this.dbClient.client.db(process.env.DB_NAME || 'olang');
+              await db.collection(step.collection).insertOne({
+                workflow_name: this.context.workflow_name || 'unknown',
+                 sourceValue,
+                created_at: new Date()
+              });
+              break;
+              
+            case 'sqlite':
+              const stmt = this.dbClient.client.prepare(
+                `INSERT INTO ${step.collection} (workflow_name, data, created_at) VALUES (?, ?, ?)`
+              );
+              stmt.run(
+                this.context.workflow_name || 'unknown',
+                JSON.stringify(sourceValue),
+                new Date().toISOString()
+              );
+              break;
+          }
+          
+          if (this.verbose) {
+            console.log(`🗄️  Persisted "${step.source}" to DB collection ${step.collection}`);
+          }
+        } catch (e) {
+          this.addWarning(`DB persist failed for "${step.source}": ${e.message}`);
+        }
+        break;
+      }
     }
 
     if (this.verbose) {
@@ -274,7 +437,11 @@ class RuntimeAPI {
   }
 
   async executeWorkflow(workflow, inputs, agentResolver) {
-    this.context = { ...inputs };
+    // ✅ Inject workflow name into context
+    this.context = { 
+      ...inputs, 
+      workflow_name: workflow.name 
+    };
     this.workflowSteps = workflow.steps;
     this.allowedResolvers = new Set(workflow.allowedResolvers || []);
 

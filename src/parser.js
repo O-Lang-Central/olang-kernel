@@ -29,25 +29,49 @@ function parse(code, fileName = null) {
     let line = lines[i];
 
     // ✅ FIXED: Match both "Allow resolvers" and "Allowed resolvers"
-   const allowMatch = line.match(/^Allow resolvers\s*:\s*$/i);
-if (allowMatch) {
-  i++;
-  while (i < lines.length) {
-    const nextLine = lines[i].trim();
-    // Stop if line is empty or looks like a new top-level section
-    if (nextLine === '' || /^[A-Z][a-z]/.test(nextLine)) {
-      break;
+    const allowMatch = line.match(/^Allow resolvers\s*:\s*$/i);
+    if (allowMatch) {
+      i++;
+      while (i < lines.length) {
+        const nextLine = lines[i].trim();
+        // Stop if line is empty or looks like a new top-level section
+        if (nextLine === '' || /^[A-Z][a-z]/.test(nextLine)) {
+          break;
+        }
+        // Strip optional YAML list marker: "- name" → "name"
+        const cleanVal = nextLine.replace(/^\-\s*/, '').trim();
+        if (cleanVal) {
+          workflow.allowedResolvers.push(cleanVal);
+          workflow.resolverPolicy.declared.push(cleanVal);
+        }
+        i++;
+      }
+      continue;
     }
-    // Strip optional YAML list marker: "- name" → "name"
-    const cleanVal = nextLine.replace(/^\-\s*/, '').trim();
-    if (cleanVal) {
-      workflow.allowedResolvers.push(cleanVal);
-      workflow.resolverPolicy.declared.push(cleanVal);
+
+    // ✅ NEW: Parse database Persist steps
+    const dbPersistMatch = line.match(/^Persist\s+([^\s]+)\s+to\s+db:([^\s]+)$/i);
+    if (dbPersistMatch) {
+      workflow.steps.push({
+        type: 'persist-db',
+        source: dbPersistMatch[1].trim(),
+        collection: dbPersistMatch[2].trim()
+      });
+      i++;
+      continue;
     }
-    i++;
-  }
-  continue;
-}
+
+    // ✅ Parse file Persist steps
+    const persistMatch = line.match(/^Persist\s+([^\s]+)\s+to\s+"([^"]+)"$/i);
+    if (persistMatch) {
+      workflow.steps.push({
+        type: 'persist',
+        source: persistMatch[1].trim(),
+        destination: persistMatch[2].trim()
+      });
+      i++;
+      continue;
+    }
 
     // ---- Math step patterns (standalone) ----
     let mathAdd = line.match(/^Add\s+\{(.+?)\}\s+and\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
@@ -67,7 +91,7 @@ if (allowMatch) {
       workflow.__requiresMath = true;
       workflow.steps.push({
         type: 'calculate',
-        expression: `subtract({${mathAdd[2]}}, {${mathAdd[1]}})`,
+        expression: `subtract({${mathSub[2]}}, {${mathSub[1]}})`, // Fixed: was mathAdd
         saveAs: mathSub[3].trim()
       });
       i++;
@@ -230,7 +254,7 @@ if (allowMatch) {
 }
 
 // ---------------------------
-// Parse nested blocks (unchanged)
+// Parse nested blocks (updated)
 // ---------------------------
 function parseBlock(lines) {
   const steps = [];
@@ -269,6 +293,24 @@ function parseBlock(lines) {
     const askMatch = line.match(/^Ask\s+(.+)$/i);
     if (askMatch) {
       steps.push({ type: 'ask', target: askMatch[1].trim(), saveAs: null, constraints: {} });
+    }
+    // ✅ Parse file Persist in blocks
+    const persistMatch = line.match(/^Persist\s+([^\s]+)\s+to\s+"([^"]+)"$/i);
+    if (persistMatch) {
+      steps.push({
+        type: 'persist',
+        source: persistMatch[1].trim(),
+        destination: persistMatch[2].trim()
+      });
+    }
+    // ✅ NEW: Parse database Persist in blocks
+    const dbPersistMatch = line.match(/^Persist\s+([^\s]+)\s+to\s+db:([^\s]+)$/i);
+    if (dbPersistMatch) {
+      steps.push({
+        type: 'persist-db',
+        source: dbPersistMatch[1].trim(),
+        collection: dbPersistMatch[2].trim()
+      });
     }
   }
   return steps;

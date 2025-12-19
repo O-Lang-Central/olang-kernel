@@ -64,25 +64,32 @@ async function builtInMathResolver(action, context) {
 builtInMathResolver.resolverName = 'builtInMathResolver';
 
 /**
- * Resolver chaining with verbose + context logging
+ * Resolver chaining: returns the FIRST resolver that returns a non-undefined result.
  */
 function createResolverChain(resolvers, verbose = false) {
-  const chain = resolvers.slice();
   const wrapped = async (action, context) => {
-    let lastResult;
-    for (let i = 0; i < chain.length; i++) {
+    for (let i = 0; i < resolvers.length; i++) {
+      const resolver = resolvers[i];
       try {
-        const res = await chain[i](action, context);
-        context[`__resolver_${i}`] = res;
-        lastResult = res;
+        const res = await resolver(action, context);
+        if (res !== undefined) {
+          // Store result in context for debugging
+          context[`__resolver_${i}`] = res;
+          if (verbose) {
+            console.log(`[✅ ${resolver.resolverName || 'anonymous'}] handled action`);
+          }
+          return res;
+        }
       } catch (e) {
-        console.error(` ❌  Resolver ${i} failed for action "${action}":`, e.message);
+        console.error(` ❌  Resolver ${resolver.resolverName || 'anonymous'} failed:`, e.message);
       }
     }
-    if (verbose) console.log(`[Resolver Chain] action="${action}" lastResult=`, lastResult);
-    return lastResult;
+    if (verbose) {
+      console.log(`[⏭️] No resolver handled action: "${action}"`);
+    }
+    return undefined;
   };
-  wrapped._chain = chain;
+  wrapped._chain = resolvers;
   return wrapped;
 }
 
