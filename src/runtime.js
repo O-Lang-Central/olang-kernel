@@ -346,10 +346,11 @@ class RuntimeAPI {
         };
         
         // ✅ Check for Advanced Evolution Service (paid tier)
-        if (process.env.OLANG_EVOLUTION_API_KEY) {
-          evolutionResult.status = 'advanced_evolution_enabled';
-          evolution resultList.message = 'Advanced evolution service would process this request';
-        }
+      // ✅ Check for Advanced Evolution Service (paid tier)
+     if (process.env.OLANG_EVOLUTION_API_KEY) {
+      evolutionResult.status = 'advanced_evolution_enabled';
+      evolutionResult.message = 'Advanced evolution service would process this request';
+    }
         
         if (step.saveAs) {
           this.context[step.saveAs] = evolutionResult;
