@@ -328,6 +328,35 @@ class RuntimeAPI {
         break;
       }
 
+      case 'evolve': {
+        // ✅ Handle in-workflow Evolve steps
+        const { targetResolver, feedback } = step;
+        
+        if (this.verbose) {
+          console.log(`🔄 Evolve step: ${targetResolver} with feedback: "${feedback}"`);
+        }
+        
+        // Basic evolution: record the request (free tier)
+        const evolutionResult = {
+          resolver: targetResolver,
+          feedback: feedback,
+          status: 'evolution_requested',
+          timestamp: new Date().toISOString(),
+          workflow: this.context.workflow_name
+        };
+        
+        // ✅ Check for Advanced Evolution Service (paid tier)
+        if (process.env.OLANG_EVOLUTION_API_KEY) {
+          evolutionResult.status = 'advanced_evolution_enabled';
+          evolution resultList.message = 'Advanced evolution service would process this request';
+        }
+        
+        if (step.saveAs) {
+          this.context[step.saveAs] = evolutionResult;
+        }
+        break;
+      }
+
       case 'if': {
         if (this.evaluateCondition(step.condition, this.context)) {
           for (const s of step.body) await this.executeStep(s, agentResolver);
@@ -452,11 +481,23 @@ class RuntimeAPI {
   }
 
   async executeWorkflow(workflow, inputs, agentResolver) {
+    // Handle regular workflows only (Evolve is a step type now)
+    if (workflow.type !== 'workflow') {
+      throw new Error(`Unknown workflow type: ${workflow.type}`);
+    }
+
     // ✅ Inject workflow name into context
     this.context = { 
       ...inputs, 
       workflow_name: workflow.name 
     };
+    
+    // ✅ Check generation constraint from Constraint: max_generations = X
+    const currentGeneration = inputs.__generation || 1;
+    if (workflow.maxGenerations !== null && currentGeneration > workflow.maxGenerations) {
+      throw new Error(`Workflow generation ${currentGeneration} exceeds Constraint: max_generations = ${workflow.maxGenerations}`);
+    }
+
     this.workflowSteps = workflow.steps;
     this.allowedResolvers = new Set(workflow.allowedResolvers || []);
 

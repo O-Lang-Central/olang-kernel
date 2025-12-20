@@ -1,319 +1,255 @@
-// src/parser.js
-function parse(code, fileName = null) {
-  if (fileName && !fileName.endsWith(".ol")) {
-    throw new Error(`Expected .ol workflow, got: ${fileName}`);
-  }
-  const rawLines = code.split(/\r?\n/);
-  const lines = rawLines
-    .map(l => l.trim())
-    .filter(l => l && !l.startsWith('#') && !l.startsWith('//'));
+const fs = require('fs');
 
+function parse(content, filename = '<unknown>') {
+  if (typeof content === 'string') {
+    const lines = content.split('\n').map(line => line.replace(/\r$/, ''));
+    return parseLines(lines, filename);
+  } else if (typeof content === 'object' && content !== null) {
+    // Already parsed
+    return content;
+  } else {
+    throw new Error('parse() expects string content or pre-parsed object');
+  }
+}
+
+function parseFromFile(filepath) {
+  const content = fs.readFileSync(filepath, 'utf8');
+  return parse(content, filepath);
+}
+
+function parseLines(lines, filename) {
+  // Remove evolution file parsing - evolution is now in-workflow
+  return parseWorkflowLines(lines, filename);
+}
+
+function parseWorkflowLines(lines, filename) {
   const workflow = {
-    name: 'Unnamed Workflow',
+    type: 'workflow',
+    name: null,
     parameters: [],
     steps: [],
     returnValues: [],
     allowedResolvers: [],
-    resolverPolicy: {
-      declared: [],
-      autoInjected: [],
-      used: [],
-      warnings: []
-    },
+    maxGenerations: null, // ✅ Updated field name for Constraint: max_generations = X
     __warnings: [],
-    __requiresMath: false
+    filename: filename
   };
-
+  
   let i = 0;
+  let currentStep = null;
+  let inAllowResolvers = false;
+  let inIfBlock = false;
+  let ifCondition = null;
+  let ifBody = [];
+  
   while (i < lines.length) {
-    let line = lines[i];
-
-    // ✅ FIXED: Match both "Allow resolvers" and "Allowed resolvers"
-    const allowMatch = line.match(/^Allow resolvers\s*:\s*$/i);
-    if (allowMatch) {
-      i++;
-      while (i < lines.length) {
-        const nextLine = lines[i].trim();
-        // Stop if line is empty or looks like a new top-level section
-        if (nextLine === '' || /^[A-Z][a-z]/.test(nextLine)) {
-          break;
+    let line = lines[i++].trim();
+    
+    // Skip empty lines and comments
+    if (line === '' || line.startsWith('#')) {
+      continue;
+    }
+    
+    // Parse Workflow declaration
+    if (line.startsWith('Workflow ')) {
+      const match = line.match(/^Workflow\s+"([^"]+)"(?:\s+with\s+(.+))?$/i);
+      if (match) {
+        workflow.name = match[1];
+        if (match[2]) {
+          workflow.parameters = match[2].split(',').map(p => p.trim()).filter(p => p !== '');
         }
-        // Strip optional YAML list marker: "- name" → "name"
-        const cleanVal = nextLine.replace(/^\-\s*/, '').trim();
-        if (cleanVal) {
-          workflow.allowedResolvers.push(cleanVal);
-          workflow.resolverPolicy.declared.push(cleanVal);
-        }
-        i++;
+      } else {
+        workflow.__warnings.push(`Invalid Workflow syntax: ${line}`);
       }
       continue;
     }
-
-    // ✅ NEW: Parse database Persist steps
-    const dbPersistMatch = line.match(/^Persist\s+([^\s]+)\s+to\s+db:([^\s]+)$/i);
-    if (dbPersistMatch) {
-      workflow.steps.push({
-        type: 'persist-db',
-        source: dbPersistMatch[1].trim(),
-        collection: dbPersistMatch[2].trim()
-      });
-      i++;
-      continue;
-    }
-
-    // ✅ Parse file Persist steps
-    const persistMatch = line.match(/^Persist\s+([^\s]+)\s+to\s+"([^"]+)"$/i);
-    if (persistMatch) {
-      workflow.steps.push({
-        type: 'persist',
-        source: persistMatch[1].trim(),
-        destination: persistMatch[2].trim()
-      });
-      i++;
-      continue;
-    }
-
-    // ---- Math step patterns (standalone) ----
-    let mathAdd = line.match(/^Add\s+\{(.+?)\}\s+and\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
-    if (mathAdd) {
-      workflow.__requiresMath = true;
-      workflow.steps.push({
-        type: 'calculate',
-        expression: `add({${mathAdd[1]}}, {${mathAdd[2]}})`,
-        saveAs: mathAdd[3].trim()
-      });
-      i++;
-      continue;
-    }
-
-    let mathSub = line.match(/^Subtract\s+\{(.+?)\}\s+from\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
-    if (mathSub) {
-      workflow.__requiresMath = true;
-      workflow.steps.push({
-        type: 'calculate',
-        expression: `subtract({${mathSub[2]}}, {${mathSub[1]}})`, // Fixed: was mathAdd
-        saveAs: mathSub[3].trim()
-      });
-      i++;
-      continue;
-    }
-
-    let mathMul = line.match(/^Multiply\s+\{(.+?)\}\s+and\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
-    if (mathMul) {
-      workflow.__requiresMath = true;
-      workflow.steps.push({
-        type: 'calculate',
-        expression: `multiply({${mathMul[1]}}, {${mathMul[2]}})`,
-        saveAs: mathMul[3].trim()
-      });
-      i++;
-      continue;
-    }
-
-    let mathDiv = line.match(/^Divide\s+\{(.+?)\}\s+by\s+\{(.+?)\}\s+Save as\s+(.+)$/i);
-    if (mathDiv) {
-      workflow.__requiresMath = true;
-      workflow.steps.push({
-        type: 'calculate',
-        expression: `divide({${mathDiv[1]}}, {${mathDiv[2]}})`,
-        saveAs: mathDiv[3].trim()
-      });
-      i++;
-      continue;
-    }
-
-    // ---- Workflow declaration ----
-    const wfMatch = line.match(/^Workflow\s+"([^"]+)"(?:\s+with\s+(.+))?/i);
-    if (wfMatch) {
-      workflow.name = wfMatch[1];
-      workflow.parameters = wfMatch[2]
-        ? wfMatch[2].split(',').map(p => p.trim())
-        : [];
-      i++;
-      continue;
-    }
-
-    // ---- Return statement (updated: auto-detect math) ----
-    const returnMatch = line.match(/^Return\s+(.+)$/i);
-    if (returnMatch) {
-      const returns = returnMatch[1].split(',').map(v => v.trim());
-      workflow.returnValues = returns;
-      // Check if any return vars come from math steps
-      for (const retVar of returns) {
-        const producedByMath = workflow.steps.some(
-          s => s.saveAs === retVar && s.type === 'calculate'
-        );
-        if (producedByMath) workflow.__requiresMath = true;
+    
+    // Parse Constraint: max_generations = X (✅ Updated syntax)
+    if (line.startsWith('Constraint: max_generations = ')) {
+      const match = line.match(/^Constraint:\s+max_generations\s*=\s*(\d+)$/i);
+      if (match) {
+        workflow.maxGenerations = parseInt(match[1], 10);
+      } else {
+        workflow.__warnings.push(`Invalid Constraint syntax: ${line}`);
       }
-      i++;
       continue;
     }
-
-    // ---- Step parsing (with inline math detection) ----
+    
+    // Parse Allow resolvers section
+    if (line === 'Allow resolvers:') {
+      inAllowResolvers = true;
+      continue;
+    }
+    
+    if (inAllowResolvers) {
+      if (line.startsWith('- ')) {
+        const resolverName = line.substring(2).trim();
+        if (resolverName) {
+          workflow.allowedResolvers.push(resolverName);
+        }
+      } else if (line === '' || line.startsWith('#')) {
+        // Continue
+      } else {
+        // End of Allow resolvers section
+        inAllowResolvers = false;
+        i--; // Re-process this line
+        continue;
+      }
+      continue;
+    }
+    
+    // Parse Step declarations
     const stepMatch = line.match(/^Step\s+(\d+)\s*:\s*(.+)$/i);
     if (stepMatch) {
-      const stepNum = parseInt(stepMatch[1], 10);
-      const raw = stepMatch[2].trim();
-
-      let mathDetected = null;
-      let expr = '';
-      let saveVar = null;
-      const mathOps = [
-        { re: /^Add\s+\{(.+?)\}\s+and\s+\{(.+?)\}\s+Save as\s+(.+)$/i, fn: 'add' },
-        { re: /^Subtract\s+\{(.+?)\}\s+from\s+\{(.+?)\}\s+Save as\s+(.+)$/i, fn: 'subtract' },
-        { re: /^Multiply\s+\{(.+?)\}\s+and\s+\{(.+?)\}\s+Save as\s+(.+)$/i, fn: 'multiply' },
-        { re: /^Divide\s+\{(.+?)\}\s+by\s+\{(.+?)\}\s+Save as\s+(.+)$/i, fn: 'divide' }
-      ];
-      for (const op of mathOps) {
-        const m = raw.match(op.re);
-        if (m) {
-          mathDetected = op.fn;
-          saveVar = m[3].trim();
-          if (op.fn === 'subtract') {
-            expr = `subtract({${m[2]}}, {${m[1]}})`;
-          } else {
-            expr = `${op.fn}({${m[1]}}, {${m[2]}})`;
-          }
-          break;
-        }
+      // Save previous step if it exists
+      if (currentStep) {
+        workflow.steps.push(currentStep);
+        currentStep = null;
       }
-      if (mathDetected) workflow.__requiresMath = true;
-      workflow.steps.push({
-        type: mathDetected ? 'calculate' : 'action',
-        stepNumber: stepNum,
-        actionRaw: mathDetected ? null : raw,
-        expression: mathDetected ? expr : undefined,
-        saveAs: saveVar,
-        constraints: {}
-      });
-      i++;
-      continue;
-    }
-
-    // ---- Save as (for legacy or multi-line steps) ----
-    const saveMatch = line.match(/^Save as\s+(.+)$/i);
-    if (saveMatch && workflow.steps.length > 0) {
-      const lastStep = workflow.steps[workflow.steps.length - 1];
-      lastStep.saveAs = saveMatch[1].trim();
-      if (lastStep.saveAs.match(/[A-Z][A-Za-z0-9_]*/)) {
-        workflow.__requiresMath = true;
-      }
-      i++;
-      continue;
-    }
-
-    // ---- Constraint parsing ----
-    const constraintMatch = line.match(/^Constraint:\s*(.+)$/i);
-    if (constraintMatch && workflow.steps.length > 0) {
-      const lastStep = workflow.steps[workflow.steps.length - 1];
-      if (!lastStep.constraints) lastStep.constraints = {};
-      const eq = constraintMatch[1].match(/^([^=]+)=\s*(.+)$/);
-      if (eq) {
-        let key = eq[1].trim();
-        let value = eq[2].trim();
-        if (value.startsWith('[') && value.endsWith(']')) {
-          value = value.slice(1, -1).split(',').map(v =>
-            v.trim().replace(/^"/, '').replace(/"$/, '')
-          );
-        } else if (!isNaN(value)) {
-          value = Number(value);
-        } else if (value.startsWith('"') && value.endsWith('"')) {
-          value = value.slice(1, -1);
-        }
-        lastStep.constraints[key] = value;
-      }
-      i++;
-      continue;
-    }
-
-    i++;
-  }
-
-  // ============================
-  // LINT & POLICY FINALIZATION
-  // ============================
-  if (workflow.__requiresMath) {
-    workflow.resolverPolicy.used.push('builtInMathResolver');
-    if (!workflow.resolverPolicy.declared.includes('builtInMathResolver')) {
-      workflow.resolverPolicy.autoInjected.push('builtInMathResolver');
-      workflow.allowedResolvers.unshift('builtInMathResolver');
-      workflow.__warnings.push(
-        'Math operations detected. builtInMathResolver auto-injected.'
-      );
-    }
-  }
-
-  if (workflow.resolverPolicy.declared.length === 0) {
-    workflow.__warnings.push(
-      'No "Allow resolvers" section declared. Workflow will run in restricted mode.'
-    );
-  }
-
-  workflow.resolverPolicy.warnings = workflow.__warnings.slice();
-  return workflow;
-}
-
-// ---------------------------
-// Parse nested blocks (updated)
-// ---------------------------
-function parseBlock(lines) {
-  const steps = [];
-  let current = null;
-  for (const line of lines) {
-    const stepMatch = line.match(/^Step\s+(\d+)\s*:\s*(.+)$/i);
-    if (stepMatch) {
-      current = {
+      
+      const stepNumber = parseInt(stepMatch[1], 10);
+      const stepContent = stepMatch[2];
+      
+      currentStep = {
         type: 'action',
-        stepNumber: parseInt(stepMatch[1], 10),
-        actionRaw: stepMatch[2].trim(),
+        stepNumber: stepNumber,
+        actionRaw: stepContent,
         saveAs: null,
         constraints: {}
       };
-      steps.push(current);
       continue;
     }
-    const saveMatch = line.match(/^Save as\s+(.+)$/i);
-    if (saveMatch && current) current.saveAs = saveMatch[1].trim();
-    const debriefMatch = line.match(/^Debrief\s+(\w+)\s+with\s+"(.+)"$/i);
-    if (debriefMatch) {
-      steps.push({ type: 'debrief', agent: debriefMatch[1], message: debriefMatch[2] });
-    }
-    const evolveMatch = line.match(/^Evolve\s+(\w+)\s+using\s+feedback:\s+"(.+)"$/i);
+    
+    // Parse Evolve steps (✅ NEW IN-WORKFLOW EVOLUTION)
+    const evolveMatch = line.match(/^Evolve\s+([^\s]+)\s+using\s+feedback:\s*"([^"]*)"$/i);
     if (evolveMatch) {
-      steps.push({ type: 'evolve', agent: evolveMatch[1], feedback: evolveMatch[2] });
+      if (currentStep) {
+        workflow.steps.push(currentStep);
+        currentStep = null;
+      }
+      
+      currentStep = {
+        type: 'evolve',
+        stepNumber: workflow.steps.length + 1,
+        targetResolver: evolveMatch[1].trim(),
+        feedback: evolveMatch[2],
+        saveAs: null,
+        constraints: {}
+      };
+      continue;
     }
-    const promptMatch = line.match(/^Prompt user to\s+"(.+)"$/i);
-    if (promptMatch) {
-      steps.push({ type: 'prompt', question: promptMatch[1], saveAs: null });
+    
+    // Parse Save as
+    const saveMatch = line.match(/^Save as\s+(.+)$/i);
+    if (saveMatch && currentStep) {
+      currentStep.saveAs = saveMatch[1].trim();
+      continue;
     }
-    const useMatch = line.match(/^Use\s+(.+)$/i);
-    if (useMatch) {
-      steps.push({ type: 'use', tool: useMatch[1].trim(), saveAs: null, constraints: {} });
+    
+    // Parse If/When conditions
+    const ifMatch = line.match(/^(?:If|When)\s+(.+)$/i);
+    if (ifMatch) {
+      ifCondition = ifMatch[1].trim();
+      inIfBlock = true;
+      ifBody = [];
+      continue;
     }
-    const askMatch = line.match(/^Ask\s+(.+)$/i);
-    if (askMatch) {
-      steps.push({ type: 'ask', target: askMatch[1].trim(), saveAs: null, constraints: {} });
-    }
-    // ✅ Parse file Persist in blocks
-    const persistMatch = line.match(/^Persist\s+([^\s]+)\s+to\s+"([^"]+)"$/i);
-    if (persistMatch) {
-      steps.push({
-        type: 'persist',
-        source: persistMatch[1].trim(),
-        destination: persistMatch[2].trim()
+    
+    const endIfMatch = line.match(/^End(?:If)?$/i);
+    if (endIfMatch && inIfBlock) {
+      if (currentStep) {
+        workflow.steps.push(currentStep);
+        currentStep = null;
+      }
+      
+      workflow.steps.push({
+        type: 'if',
+        condition: ifCondition,
+        body: ifBody,
+        stepNumber: workflow.steps.length + 1
       });
+      
+      inIfBlock = false;
+      ifCondition = null;
+      ifBody = [];
+      continue;
     }
-    // ✅ NEW: Parse database Persist in blocks
-    const dbPersistMatch = line.match(/^Persist\s+([^\s]+)\s+to\s+db:([^\s]+)$/i);
-    if (dbPersistMatch) {
-      steps.push({
-        type: 'persist-db',
-        source: dbPersistMatch[1].trim(),
-        collection: dbPersistMatch[2].trim()
-      });
+    
+    // Handle lines inside If block
+    if (inIfBlock) {
+      ifBody.push(line);
+      continue;
+    }
+    
+    // Parse Return statement
+    const returnMatch = line.match(/^Return\s+(.+)$/i);
+    if (returnMatch) {
+      if (currentStep) {
+        workflow.steps.push(currentStep);
+        currentStep = null;
+      }
+      workflow.returnValues = returnMatch[1].split(',').map(r => r.trim()).filter(r => r !== '');
+      continue;
+    }
+    
+    // If we reach here and have unprocessed content, it's likely a workflow line without "Step X:"
+    // Try to handle it as a step
+    if (line.trim() !== '') {
+      if (!currentStep) {
+        currentStep = {
+          type: 'action',
+          stepNumber: workflow.steps.length + 1,
+          actionRaw: line,
+          saveAs: null,
+          constraints: {}
+        };
+      } else {
+        // Append to current step action (multi-line)
+        currentStep.actionRaw += ' ' + line;
+      }
     }
   }
-  return steps;
+  
+  // Don't forget the last step
+  if (currentStep) {
+    workflow.steps.push(currentStep);
+  }
+  
+  // Post-process steps to extract Save as from actionRaw
+  workflow.steps.forEach(step => {
+    if (step.actionRaw && step.saveAs === null) {
+      const saveInAction = step.actionRaw.match(/(.+?)\s+Save as\s+(.+)$/i);
+      if (saveInAction) {
+        step.actionRaw = saveInAction[1].trim();
+        step.saveAs = saveInAction[2].trim();
+      }
+    }
+  });
+  
+  // Check for common issues
+  if (!workflow.name) {
+    workflow.__warnings.push('Workflow name not found');
+  }
+  
+  if (workflow.steps.length === 0) {
+    workflow.__warnings.push('No steps found in workflow');
+  }
+  
+  if (workflow.returnValues.length === 0 && workflow.steps.length > 0) {
+    workflow.__warnings.push('No Return statement found');
+  }
+  
+  return workflow;
 }
 
-module.exports = { parse };
+function validate(workflow) {
+  const errors = [];
+  
+  if (workflow.maxGenerations !== null && workflow.maxGenerations <= 0) {
+    errors.push('max_generations must be positive');
+  }
+  
+  return errors;
+}
+
+module.exports = { parse, parseFromFile, parseLines, validate };
