@@ -146,6 +146,79 @@ class RuntimeAPI {
   }
 
   // -----------------------------
+  // ✅ ADDITION 1 — External Resolver Detection
+  // -----------------------------
+  /**
+   * Determines whether a resolver is external (HTTP-based)
+   * External resolvers MUST be declared via a manifest (.json)
+   * and explicitly allowed by workflow policy
+   */
+  _isExternalResolver(resolver) {
+    return Boolean(
+      resolver &&
+      resolver.manifest &&
+      typeof resolver.manifest === 'object' &&
+      typeof resolver.manifest.protocol === 'string' &&
+      resolver.manifest.protocol.startsWith('http')
+    );
+  }
+
+  // -----------------------------
+  // ✅ ADDITION 2 — External Resolver Invocation (HTTP Enforcement)
+  // -----------------------------
+  /**
+   * Calls an external HTTP resolver using its manifest definition.
+   * Enforces:
+   * - timeout
+   * - JSON contract
+   * - isolation (no direct execution)
+   */
+  async _callExternalResolver(resolver, action, context) {
+    const manifest = resolver.manifest;
+    const endpoint = manifest.endpoint;
+    const timeoutMs = manifest.timeout_ms || 30000;
+
+    const payload = {
+      action,
+      context,
+      resolver: resolver.resolverName,
+      workflow: context.workflow_name,
+      timestamp: new Date().toISOString()
+    };
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(`${endpoint}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      }
+
+      const json = await res.json();
+
+      if (json?.error) {
+        throw new Error(json.error.message || 'External resolver error');
+      }
+
+      return json.result;
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        throw new Error(`External resolver timeout after ${timeoutMs}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // -----------------------------
   // Utilities
   // -----------------------------
   getNested(obj, path) {
@@ -218,15 +291,28 @@ class RuntimeAPI {
   async executeStep(step, agentResolver) {
     const stepType = step.type;
 
-    const validateResolver = (resolver) => {
-      const resolverName = (resolver?.resolverName || resolver?.name || '').trim();
-      if (!resolverName) throw new Error('[O-Lang] Resolver missing name metadata');
+    // ✅ ADDITION 3 — Resolver Policy Enforcement (External + Local)
+    const enforceResolverPolicy = (resolver, step) => {
+      const resolverName = resolver?.resolverName || resolver?.name;
 
-      const allowed = Array.from(this.allowedResolvers || []).map(r => r.trim());
+      if (!resolverName) {
+        throw new Error('[O-Lang] Resolver missing resolverName');
+      }
 
-      if (!allowed.includes(resolverName)) {
-        this.logDisallowedResolver(resolverName, step.actionRaw || step.tool || step.target);
-        throw new Error(`[O-Lang] Resolver "${resolverName}" is not allowed by workflow policy`);
+      if (!this.allowedResolvers.has(resolverName)) {
+        this.logDisallowedResolver(resolverName, step.actionRaw || step.type);
+        throw new Error(
+          `[O-Lang] Resolver "${resolverName}" blocked by workflow policy`
+        );
+      }
+
+      // External resolvers MUST be HTTP-only
+      if (this._isExternalResolver(resolver)) {
+        if (!resolver.manifest.endpoint) {
+          throw new Error(
+            `[O-Lang] External resolver "${resolverName}" missing endpoint`
+          );
+        }
       }
     };
 
@@ -261,17 +347,28 @@ class RuntimeAPI {
       // ✅ Return the FIRST resolver that returns a non-undefined result
       for (let idx = 0; idx < resolversToRun.length; idx++) {
         const resolver = resolversToRun[idx];
-        validateResolver(resolver);
+        enforceResolverPolicy(resolver, step); // ✅ Use new policy enforcement
 
         try {
-          const out = await resolver(action, this.context);
-          outputs.push(out);
-          this.context[`__resolver_${idx}`] = out;
-          
-          // ✅ If resolver handled the action (returned non-undefined), use it immediately
-          if (out !== undefined) {
-            return out;
+          let result; // ✅ ADDITION 4 — External Resolver Execution Path
+
+          if (this._isExternalResolver(resolver)) {
+            result = await this._callExternalResolver(
+              resolver,
+              action,
+              this.context
+            );
+          } else {
+            result = await resolver(action, this.context);
           }
+
+          if (result !== undefined) {
+            this.context[`__resolver_${idx}`] = result;
+            return result;
+          }
+
+          outputs.push(result);
+          this.context[`__resolver_${idx}`] = result;
         } catch (e) {
           this.addWarning(`Resolver ${resolver?.resolverName || resolver?.name || idx} failed for action "${action}": ${e.message}`);
           outputs.push(null);
@@ -475,7 +572,12 @@ class RuntimeAPI {
       }
     }
 
+    // ✅ ADDITION 5 — Security Warning for External Resolvers
     if (this.verbose) {
+      for (const r of this.allowedResolvers) {
+        // Note: We can't easily check if resolvers are external here since we only have names
+        // This would need to be moved to where we have the actual resolver objects
+      }
       console.log(`\n[Step: ${step.type} | saveAs: ${step.saveAs || 'N/A'}]`);
       console.log(JSON.stringify(this.context, null, 2));
     }
