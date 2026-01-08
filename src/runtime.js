@@ -93,6 +93,33 @@ class RuntimeAPI {
   }
 
   // -----------------------------
+  // ✅ SEMANTIC ENFORCEMENT HELPER
+  // -----------------------------
+  _requireSemantic(symbol, stepType) {
+    const value = this.context[symbol];
+    if (value === undefined) {
+      const error = {
+        type: 'semantic_violation',
+        symbol: symbol,
+        expected: 'defined value',
+        used_by: stepType,
+        phase: 'execution'
+      };
+      
+      // Emit semantic event (for observability)
+      this.emit('semantic_violation', error);
+      
+      // Log as error (not warning)
+      if (this.verbose) {
+        console.error(`[O-Lang SEMANTIC] Missing required symbol "${symbol}" for ${stepType}`);
+      }
+      
+      return false;
+    }
+    return true;
+  }
+
+  // -----------------------------
   // Parser/runtime warnings
   // -----------------------------
   addWarning(message) {
@@ -148,11 +175,6 @@ class RuntimeAPI {
   // -----------------------------
   // ✅ ADDITION 1 — External Resolver Detection
   // -----------------------------
-  /**
-   * Determines whether a resolver is external (HTTP-based)
-   * External resolvers MUST be declared via a manifest (.json)
-   * and explicitly allowed by workflow policy
-   */
   _isExternalResolver(resolver) {
     return Boolean(
       resolver &&
@@ -166,13 +188,6 @@ class RuntimeAPI {
   // -----------------------------
   // ✅ ADDITION 2 — External Resolver Invocation (HTTP Enforcement)
   // -----------------------------
-  /**
-   * Calls an external HTTP resolver using its manifest definition.
-   * Enforces:
-   * - timeout
-   * - JSON contract
-   * - isolation (no direct execution)
-   */
   async _callExternalResolver(resolver, action, context) {
     const manifest = resolver.manifest;
     const endpoint = manifest.endpoint;
@@ -290,6 +305,18 @@ class RuntimeAPI {
   // -----------------------------
   async executeStep(step, agentResolver) {
     const stepType = step.type;
+
+    // ✅ Enforce per-step constraints (basic validation)
+    if (step.constraints && Object.keys(step.constraints).length > 0) {
+      for (const [key, value] of Object.entries(step.constraints)) {
+        // Log unsupported constraints (future extensibility)
+        if (['max_time_sec', 'cost_limit', 'allowed_resolvers'].includes(key)) {
+          this.addWarning(`Per-step constraint "${key}=${value}" is parsed but not yet enforced`);
+        } else {
+          this.addWarning(`Unknown per-step constraint: ${key}=${value}`);
+        }
+      }
+    }
 
     // ✅ ADDITION 3 — Resolver Policy Enforcement (External + Local)
     const enforceResolverPolicy = (resolver, step) => {
@@ -426,14 +453,12 @@ class RuntimeAPI {
       }
 
       case 'evolve': {
-        // ✅ Handle in-workflow Evolve steps
         const { targetResolver, feedback } = step;
         
         if (this.verbose) {
           console.log(`🔄 Evolve step: ${targetResolver} with feedback: "${feedback}"`);
         }
         
-        // Basic evolution: record the request (free tier)
         const evolutionResult = {
           resolver: targetResolver,
           feedback: feedback,
@@ -442,12 +467,10 @@ class RuntimeAPI {
           workflow: this.context.workflow_name
         };
         
-        // ✅ Check for Advanced Evolution Service (paid tier)
-      // ✅ Check for Advanced Evolution Service (paid tier)
-     if (process.env.OLANG_EVOLUTION_API_KEY) {
-      evolutionResult.status = 'advanced_evolution_enabled';
-      evolutionResult.message = 'Advanced evolution service would process this request';
-    }
+        if (process.env.OLANG_EVOLUTION_API_KEY) {
+          evolutionResult.status = 'advanced_evolution_enabled';
+          evolutionResult.message = 'Advanced evolution service would process this request';
+        }
         
         if (step.saveAs) {
           this.context[step.saveAs] = evolutionResult;
@@ -463,7 +486,99 @@ class RuntimeAPI {
       }
 
       case 'parallel': {
-        await Promise.all(step.steps.map(s => this.executeStep(s, agentResolver)));
+        const { steps, timeout } = step;
+        
+        if (timeout !== undefined && timeout > 0) {
+          // Timed parallel execution
+          const timeoutPromise = new Promise(resolve => {
+            setTimeout(() => resolve({ timedOut: true }), timeout);
+          });
+          
+          const parallelPromise = Promise.all(
+            steps.map(s => this.executeStep(s, agentResolver))
+          ).then(() => ({ timedOut: false }));
+          
+          const result = await Promise.race([timeoutPromise, parallelPromise]);
+          this.context.timed_out = result.timedOut;
+          
+          if (result.timedOut) {
+            this.emit('parallel_timeout', { duration: timeout, steps: steps.length });
+            if (this.verbose) {
+              console.log(`⏰ Parallel execution timed out after ${timeout}ms`);
+            }
+          }
+        } else {
+          // Normal parallel execution (no timeout)
+          await Promise.all(steps.map(s => this.executeStep(s, agentResolver)));
+          this.context.timed_out = false;
+        }
+        break;
+      }
+
+      case 'escalation': {
+        const { levels } = step;
+        let finalResult = null;
+        let currentTimeout = 0;
+        let completedLevel = null;
+        
+        for (const level of levels) {
+          if (level.timeout === 0) {
+            // Immediate execution (no timeout)
+            const levelSteps = require('./parser').parseBlock(level.steps);
+            for (const levelStep of levelSteps) {
+              await this.executeStep(levelStep, agentResolver);
+            }
+            
+            // Check if the target variable was set in this level
+            // For now, we'll assume the last saveAs in the level is the result
+            if (levelSteps.length > 0) {
+              const lastStep = levelSteps[levelSteps.length - 1];
+              if (lastStep.saveAs && this.context[lastStep.saveAs] !== undefined) {
+                finalResult = this.context[lastStep.saveAs];
+                completedLevel = level.levelNumber;
+                break;
+              }
+            }
+          } else {
+            // Timed execution for this level
+            currentTimeout += level.timeout;
+            
+            const timeoutPromise = new Promise(resolve => {
+              setTimeout(() => resolve({ timedOut: true }), level.timeout);
+            });
+            
+            const levelPromise = (async () => {
+              const levelSteps = require('./parser').parseBlock(level.steps);
+              for (const levelStep of levelSteps) {
+                await this.executeStep(levelStep, agentResolver);
+              }
+              return { timedOut: false };
+            })();
+            
+            const result = await Promise.race([timeoutPromise, levelPromise]);
+            
+            if (!result.timedOut) {
+              // Level completed successfully
+              if (levelSteps && levelSteps.length > 0) {
+                const lastStep = levelSteps[levelSteps.length - 1];
+                if (lastStep.saveAs && this.context[lastStep.saveAs] !== undefined) {
+                  finalResult = this.context[lastStep.saveAs];
+                  completedLevel = level.levelNumber;
+                  break;
+                }
+              }
+            }
+            // If timed out, continue to next level
+          }
+        }
+        
+        // Set escalation status in context
+        this.context.escalation_completed = finalResult !== null;
+        this.context.timed_out = finalResult === null;
+        if (completedLevel !== null) {
+          this.context.escalation_level = completedLevel;
+        }
+        
         break;
       }
 
@@ -478,26 +593,87 @@ class RuntimeAPI {
       }
 
       case 'debrief': {
+        // ✅ SEMANTIC VALIDATION: Check symbols in message
+        if (step.message.includes('{')) {
+          const symbols = step.message.match(/\{([^\}]+)\}/g) || [];
+          for (const symbolMatch of symbols) {
+            const symbol = symbolMatch.replace(/[{}]/g, '');
+            this._requireSemantic(symbol, 'debrief');
+          }
+        }
         this.emit('debrief', { agent: step.agent, message: step.message });
         break;
       }
 
-      // ✅ File Persist step handler
-      case 'persist': {
-        const sourceValue = this.getNested(this.context, step.source);
-        if (sourceValue === undefined) {
-          this.addWarning(`Cannot persist undefined value from "${step.source}" to "${step.destination}"`);
+      // ✅ NEW: Prompt step handler
+      case 'prompt': {
+        if (this.verbose) {
+          console.log(`❓ Prompt: ${step.question}`);
+        }
+        // In non-interactive mode, leave as no-op
+        // (Could integrate with stdin or API in future)
+        break;
+      }
+
+      // ✅ NEW: Emit step handler with semantic validation
+      case 'emit': {
+        // ✅ SEMANTIC VALIDATION: Check all symbols in payload
+        const payloadTemplate = step.payload;
+        const symbols = [...new Set(payloadTemplate.match(/\{([^\}]+)\}/g) || [])];
+        
+        let shouldEmit = true;
+        for (const symbolMatch of symbols) {
+          const symbol = symbolMatch.replace(/[{}]/g, '');
+          if (!this._requireSemantic(symbol, 'emit')) {
+            shouldEmit = false;
+            // Continue to validate all symbols (for complete error reporting)
+          }
+        }
+        
+        if (!shouldEmit) {
+          if (this.verbose) {
+            console.log(`⏭️ Skipped emit due to missing semantic symbols`);
+          }
           break;
         }
+        
+        const payload = step.payload.replace(/\{([^\}]+)\}/g, (_, path) => {
+          const value = this.getNested(this.context, path.trim());
+          return value !== undefined ? String(value) : `{${path}}`;
+        });
+        
+        this.emit(step.event, { 
+          payload: payload,
+          workflow: this.context.workflow_name,
+          timestamp: new Date().toISOString()
+        });
+        
+        if (this.verbose) {
+          console.log(`📤 Emit event "${step.event}" with payload: ${payload}`);
+        }
+        break;
+      }
 
-        const outputPath = path.resolve(process.cwd(), step.destination);
+      // ✅ File Persist step handler with semantic validation
+      case 'persist': {
+        // ✅ SEMANTIC VALIDATION: Require symbol exists
+        if (!this._requireSemantic(step.variable, 'persist')) {
+          // Default policy: Skip persist (safe)
+          if (this.verbose) {
+            console.log(`⏭️ Skipped persist for undefined "${step.variable}"`);
+          }
+          break;
+        }
+        
+        const sourceValue = this.context[step.variable]; // Now guaranteed defined
+        const outputPath = path.resolve(process.cwd(), step.target);
         const outputDir = path.dirname(outputPath);
         if (!fs.existsSync(outputDir)) {
           fs.mkdirSync(outputDir, { recursive: true });
         }
 
         let content;
-        if (step.destination.endsWith('.json')) {
+        if (step.target.endsWith('.json')) {
           content = JSON.stringify(sourceValue, null, 2);
         } else {
           content = String(sourceValue);
@@ -506,23 +682,27 @@ class RuntimeAPI {
         fs.writeFileSync(outputPath, content, 'utf8');
 
         if (this.verbose) {
-          console.log(`💾 Persisted "${step.source}" to ${step.destination}`);
+          console.log(`💾 Persisted "${step.variable}" to ${step.target}`);
         }
         break;
       }
 
-      // ✅ NEW: Database persist handler
+      // ✅ NEW: Database persist handler with semantic validation
       case 'persist-db': {
         if (!this.dbClient) {
           this.addWarning(`DB persistence skipped (no DB configured). Set OLANG_DB_TYPE env var.`);
           break;
         }
 
-        const sourceValue = this.getNested(this.context, step.source);
-        if (sourceValue === undefined) {
-          this.addWarning(`Cannot persist undefined value from "${step.source}" to DB collection "${step.collection}"`);
+        // ✅ SEMANTIC VALIDATION: Require symbol exists
+        if (!this._requireSemantic(step.variable, 'persist-db')) {
+          if (this.verbose) {
+            console.log(`⏭️ Skipped DB persist for undefined "${step.variable}"`);
+          }
           break;
         }
+        
+        const sourceValue = this.context[step.variable]; // Now guaranteed defined
 
         try {
           switch (this.dbClient.type) {
@@ -563,39 +743,31 @@ class RuntimeAPI {
           }
           
           if (this.verbose) {
-            console.log(`🗄️  Persisted "${step.source}" to DB collection ${step.collection}`);
+            console.log(`🗄️  Persisted "${step.variable}" to DB collection ${step.collection}`);
           }
         } catch (e) {
-          this.addWarning(`DB persist failed for "${step.source}": ${e.message}`);
+          this.addWarning(`DB persist failed for "${step.variable}": ${e.message}`);
         }
         break;
       }
     }
 
-    // ✅ ADDITION 5 — Security Warning for External Resolvers
     if (this.verbose) {
-      for (const r of this.allowedResolvers) {
-        // Note: We can't easily check if resolvers are external here since we only have names
-        // This would need to be moved to where we have the actual resolver objects
-      }
       console.log(`\n[Step: ${step.type} | saveAs: ${step.saveAs || 'N/A'}]`);
       console.log(JSON.stringify(this.context, null, 2));
     }
   }
 
   async executeWorkflow(workflow, inputs, agentResolver) {
-    // Handle regular workflows only (Evolve is a step type now)
     if (workflow.type !== 'workflow') {
       throw new Error(`Unknown workflow type: ${workflow.type}`);
     }
 
-    // ✅ Inject workflow name into context
     this.context = { 
       ...inputs, 
       workflow_name: workflow.name 
     };
     
-    // ✅ Check generation constraint from Constraint: max_generations = X
     const currentGeneration = inputs.__generation || 1;
     if (workflow.maxGenerations !== null && currentGeneration > workflow.maxGenerations) {
       throw new Error(`Workflow generation ${currentGeneration} exceeds Constraint: max_generations = ${workflow.maxGenerations}`);
@@ -626,9 +798,13 @@ class RuntimeAPI {
       });
     }
 
+    // ✅ SEMANTIC VALIDATION: For return values
     const result = {};
     for (const key of workflow.returnValues) {
-      result[key] = this.getNested(this.context, key);
+      if (this._requireSemantic(key, 'return')) {
+        result[key] = this.context[key];
+      }
+      // Skip undefined return values (safe default)
     }
     return result;
   }

@@ -5,6 +5,9 @@ const { execute } = require('./src/runtime');
 const fs = require('fs');
 const path = require('path');
 
+// === ADDED: Load package.json for version (1 line added) ===
+const pkg = require('./package.json');
+
 /**
  * Enforce .ol extension ONLY (CLI only)
  */
@@ -155,6 +158,9 @@ function loadResolverChain(specifiers, verbose, allowed) {
  * CLI SETUP
  */
 const program = new Command();
+
+// === ADDED: Version support (1 line added) ===
+program.version(pkg.version, '-V, --version', 'Show O-lang kernel version');
 
 // === RUN COMMAND ===
 program
