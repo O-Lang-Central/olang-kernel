@@ -343,9 +343,8 @@ class RuntimeAPI {
       }
     };
 
+    // ✅ STRICT SAFETY: Updated runResolvers with failure halting
     const runResolvers = async (action) => {
-      const outputs = [];
-
       const mathPattern =
         /^(Add|Subtract|Multiply|Divide|Sum|Avg|Min|Max|Round|Floor|Ceil|Abs)\b/i;
 
@@ -371,13 +370,13 @@ class RuntimeAPI {
         resolversToRun = [agentResolver];
       }
 
-      // ✅ Return the FIRST resolver that returns a non-undefined result
+      // ✅ STRICT SAFETY: Fail fast on resolver errors or empty results
       for (let idx = 0; idx < resolversToRun.length; idx++) {
         const resolver = resolversToRun[idx];
-        enforceResolverPolicy(resolver, step); // ✅ Use new policy enforcement
+        enforceResolverPolicy(resolver, step);
 
         try {
-          let result; // ✅ ADDITION 4 — External Resolver Execution Path
+          let result;
 
           if (this._isExternalResolver(resolver)) {
             result = await this._callExternalResolver(
@@ -389,22 +388,32 @@ class RuntimeAPI {
             result = await resolver(action, this.context);
           }
 
-          if (result !== undefined) {
-            this.context[`__resolver_${idx}`] = result;
-            return result;
+          // ✅ SAFETY GUARD 1: Reject undefined/null results
+          if (result === undefined || result === null) {
+            throw new Error(
+              `[O-Lang SAFETY] Resolver "${resolver.resolverName || resolver.name || 'anonymous'}" returned empty result for action: "${action}". ` +
+              `Workflow halted to prevent unsafe data propagation.`
+            );
           }
 
-          outputs.push(result);
           this.context[`__resolver_${idx}`] = result;
+          return result;
+
         } catch (e) {
-          this.addWarning(`Resolver ${resolver?.resolverName || resolver?.name || idx} failed for action "${action}": ${e.message}`);
-          outputs.push(null);
-          this.context[`__resolver_${idx}`] = null;
+          // ✅ SAFETY GUARD 2: HALT workflow immediately on resolver failure
+          throw new Error(
+            `[O-Lang SAFETY] Resolver "${resolver?.resolverName || resolver?.name || idx}" failed for action "${action}": ${e.message}\n` +
+            `Workflow execution halted.`
+          );
         }
       }
 
-      // If no resolver handled the action, return undefined
-      return undefined;
+      // ✅ SAFETY GUARD 3: No resolver handled the action — HALT
+      throw new Error(
+        `[O-Lang SAFETY] No resolver handled action: "${action}". ` +
+        `Available resolvers: ${resolversToRun.map(r => r.resolverName || r.name || 'anonymous').join(', ')}. ` +
+        `Workflow execution halted.`
+      );
     };
 
     switch (stepType) {
