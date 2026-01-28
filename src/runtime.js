@@ -343,7 +343,7 @@ class RuntimeAPI {
       }
     };
 
-    // ✅ CORRECTED: Strict safety WITH proper resolver chaining
+    // ✅ CORRECTED: Strict safety WITH dynamic diagnostics
     const runResolvers = async (action) => {
       const mathPattern =
         /^(Add|Subtract|Multiply|Divide|Sum|Avg|Min|Max|Round|Floor|Ceil|Abs)\b/i;
@@ -360,19 +360,19 @@ class RuntimeAPI {
       let resolversToRun = [];
       
       if (agentResolver && Array.isArray(agentResolver._chain)) {
-        // Resolver chain mode
         resolversToRun = agentResolver._chain;
       } else if (Array.isArray(agentResolver)) {
-        // Array of resolvers mode (what npx olang passes with -r flags)
         resolversToRun = agentResolver;
       } else if (agentResolver) {
-        // Single resolver mode
         resolversToRun = [agentResolver];
       }
 
-      // ✅ CORRECTED SAFETY: Try ALL resolvers before halting
+      // ✅ Track detailed resolver outcomes for diagnostics
+      const resolverAttempts = [];
+
       for (let idx = 0; idx < resolversToRun.length; idx++) {
         const resolver = resolversToRun[idx];
+        const resolverName = resolver?.resolverName || resolver?.name || `resolver-${idx}`;
         enforceResolverPolicy(resolver, step);
 
         try {
@@ -393,22 +393,110 @@ class RuntimeAPI {
             this.context[`__resolver_${idx}`] = result;
             return result;
           }
-          // ❌ Resolver skipped this action (returned undefined/null) — continue to next resolver
-          // This is NORMAL resolver chaining behavior — NOT an error
+
+          // ⚪ Resolver skipped this action (normal behavior)
+          resolverAttempts.push({
+            name: resolverName,
+            status: 'skipped',
+            reason: 'Action not recognized'
+          });
 
         } catch (e) {
-          // ❌ Resolver threw an error — log warning but CONTINUE to next resolver
-          this.addWarning(`Resolver "${resolver?.resolverName || resolver?.name || idx}" threw error for action "${action}": ${e.message}`);
-          // Continue loop to try next resolver (don't halt yet)
+          // ❌ Resolver attempted but failed — capture structured diagnostics
+          const diagnostics = {
+            error: e.message || String(e),
+            requiredEnvVars: e.requiredEnvVars || [],          // Resolver can attach this
+            missingInputs: e.missingInputs || [],              // Resolver can attach this
+            documentationUrl: resolver?.documentationUrl || 
+                             (resolver?.manifest?.documentationUrl) || null
+          };
+
+          resolverAttempts.push({
+            name: resolverName,
+            status: 'failed',
+            diagnostics
+          });
+          
+          // Log for verbose mode but continue chaining
+          this.addWarning(`Resolver "${resolverName}" failed for action "${action}": ${diagnostics.error}`);
         }
       }
 
-      // ✅ SAFETY GUARD: ALL resolvers skipped/failed — HALT workflow
-      throw new Error(
-        `[O-Lang SAFETY] No resolver successfully handled action: "${action}". ` +
-        `Attempted resolvers: ${resolversToRun.map(r => r.resolverName || r.name || 'anonymous').join(', ')}. ` +
-        `Workflow execution halted to prevent unsafe data propagation.`
-      );
+      // ✅ BUILD DYNAMIC, ACTIONABLE ERROR MESSAGE
+      let errorMessage = `[O-Lang SAFETY] No resolver handled action: "${action}"\n\n`;
+      errorMessage += `Attempted resolvers:\n`;
+
+      resolverAttempts.forEach((attempt, i) => {
+        const namePad = attempt.name.padEnd(30);
+        if (attempt.status === 'skipped') {
+          errorMessage += `  ${i + 1}. ${namePad} → SKIPPED (not applicable to this action)\n`;
+        } else {
+          errorMessage += `  ${i + 1}. ${namePad} → FAILED\n`;
+          errorMessage += `     Error: ${attempt.diagnostics.error}\n`;
+          
+          // ✅ DYNAMIC HINT: Resolver-provided env vars
+          if (attempt.diagnostics.requiredEnvVars?.length) {
+            errorMessage += `     Required env vars: ${attempt.diagnostics.requiredEnvVars.join(', ')}\n`;
+          }
+          
+          // ✅ DYNAMIC HINT: Resolver-provided docs link
+          if (attempt.diagnostics.documentationUrl) {
+            errorMessage += `     Docs: ${attempt.diagnostics.documentationUrl}\n`;
+          }
+        }
+      });
+
+      // ✅ DYNAMIC REMEDIATION (no hardcoded resolver names)
+      const failed = resolverAttempts.filter(a => a.status === 'failed');
+      const allSkipped = failed.length === 0;
+
+      errorMessage += `\n💡 How to fix:\n`;
+
+      if (allSkipped) {
+        // Likely action syntax mismatch
+        errorMessage += `  • Action syntax may not match resolver expectations\n`;
+        errorMessage += `    → Try removing "Action" keyword: bank-account-lookup "{id}"\n`;
+        errorMessage += `    → NOT: Action bank-account-lookup "{id}"\n`;
+        errorMessage += `  • Verify correct resolver is installed for this action type\n`;
+      } else {
+        // At least one resolver attempted but failed
+        errorMessage += `  • Check resolver requirements:\n`;
+        errorMessage += `    → Run workflow with --verbose flag for detailed logs\n`;
+        errorMessage += `    → Ensure required environment variables are set\n`;
+        
+        // Pattern-based hints (generic, not hardcoded)
+        const envVarPattern = /environment variable|env\.|process\.env|missing.*path/i;
+        if (failed.some(f => envVarPattern.test(f.diagnostics.error))) {
+          errorMessage += `    → Example (PowerShell): $env:VARIABLE="value"\n`;
+          errorMessage += `    → Example (Linux/macOS): export VARIABLE="value"\n`;
+        }
+        
+        const dbPattern = /database|db\.|sqlite|postgres|mysql|mongodb/i;
+        if (failed.some(f => dbPattern.test(f.diagnostics.error))) {
+          errorMessage += `    → Ensure database file/connection exists and path is correct\n`;
+        }
+        
+        const authPattern = /auth|api key|token|credential/i;
+        if (failed.some(f => authPattern.test(f.diagnostics.error))) {
+          errorMessage += `    → Verify API keys/tokens are set in environment variables\n`;
+        }
+      }
+
+      // ✅ Always show generic troubleshooting path
+      errorMessage += `\n  • Resolver documentation:\n`;
+      let hasDocs = false;
+      resolverAttempts.forEach(attempt => {
+        if (attempt.diagnostics?.documentationUrl) {
+          errorMessage += `    → ${attempt.name}: ${attempt.diagnostics.documentationUrl}\n`;
+          hasDocs = true;
+        }
+      });
+      if (!hasDocs) {
+        errorMessage += `    → Search "@o-lang/<resolver-name>" on npmjs.com\n`;
+      }
+
+      errorMessage += `\n🛑 Workflow halted to prevent unsafe data propagation to LLMs.`;
+      throw new Error(errorMessage);
     };
 
     switch (stepType) {
