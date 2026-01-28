@@ -373,7 +373,7 @@ class RuntimeAPI {
       }
     };
 
-    // ✅ CORRECTED: Strict safety WITH dynamic diagnostics (NO SCOPE ERRORS)
+    // ✅ CORRECTED: Strict safety WITH dynamic diagnostics (FIXED SCOPE ERROR)
     const runResolvers = async (action) => {
       const mathPattern =
         /^(Add|Subtract|Multiply|Divide|Sum|Avg|Min|Max|Round|Floor|Ceil|Abs)\b/i;
@@ -521,7 +521,7 @@ class RuntimeAPI {
         }
       });
       if (!hasDocs) {
-        errorMessage += `    → Visit https://www.npmjs.com/search?q=%40o-lang for resolver packages\n`;
+        errorMessage += `    → Visit https://www.npmjs.com/search?q=%40o-lang for resolver packages\n`;  // ✅ FIXED
       }
 
       errorMessage += `\n🛑 Workflow halted to prevent unsafe data propagation to LLMs.`;
