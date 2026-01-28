@@ -301,7 +301,7 @@ class RuntimeAPI {
   }
 
   // -----------------------------
-  // ✅ SAFE INTERPOLATION HELPER (NEW - CRITICAL FOR HALLUCINATION PREVENTION)
+  // ✅ SAFE INTERPOLATION HELPER (CRITICAL FOR HALLUCINATION PREVENTION)
   // -----------------------------
   _safeInterpolate(template, context, contextType = 'action') {
     return template.replace(/\{([^\}]+)\}/g, (_, path) => {
@@ -373,7 +373,7 @@ class RuntimeAPI {
       }
     };
 
-    // ✅ CORRECTED: Strict safety WITH dynamic diagnostics
+    // ✅ CORRECTED: Strict safety WITH dynamic diagnostics (NO SCOPE ERRORS)
     const runResolvers = async (action) => {
       const mathPattern =
         /^(Add|Subtract|Multiply|Divide|Sum|Avg|Min|Max|Round|Floor|Ceil|Abs)\b/i;
@@ -452,83 +452,80 @@ class RuntimeAPI {
         }
       }
 
-      // ✅ BUILD DYNAMIC, ACTIONABLE ERROR MESSAGE
-      // ✅ BUILD DYNAMIC, ACTIONABLE ERROR MESSAGE (NO HARDCODED HINTS)
-let errorMessage = `[O-Lang SAFETY] No resolver handled action: "${action}"\n\n`;
-errorMessage += `Attempted resolvers:\n`;
+      // ✅ BUILD DYNAMIC, ACTIONABLE ERROR MESSAGE (FIXED: NO SCOPE ERRORS)
+      let errorMessage = `[O-Lang SAFETY] No resolver handled action: "${action}"\n\n`;
+      errorMessage += `Attempted resolvers:\n`;
 
-resolverAttempts.forEach((attempt, i) => {
-  const namePad = attempt.name.padEnd(30);
-  if (attempt.status === 'skipped') {
-    errorMessage += `  ${i + 1}. ${namePad} → SKIPPED (action not recognized)\n`;
-  } else {
-    errorMessage += `  ${i + 1}. ${namePad} → FAILED\n`;
-    errorMessage += `     Error: ${attempt.diagnostics.error}\n`;
-    
-    // ✅ DYNAMIC HINT: Resolver-provided env vars (if available)
-    if (attempt.diagnostics.requiredEnvVars?.length) {
-      errorMessage += `     Required env vars: ${attempt.diagnostics.requiredEnvVars.join(', ')}\n`;
-    }
-    
-    // ✅ DYNAMIC HINT: Resolver-provided docs link (if available)
-    if (attempt.diagnostics.documentationUrl) {
-      errorMessage += `     Docs: ${attempt.diagnostics.documentationUrl}\n`;
-    }
-  }
-});
+      resolverAttempts.forEach((attempt, i) => {
+        const namePad = attempt.name.padEnd(30);
+        if (attempt.status === 'skipped') {
+          errorMessage += `  ${i + 1}. ${namePad} → SKIPPED (action not recognized)\n`;
+        } else {
+          errorMessage += `  ${i + 1}. ${namePad} → FAILED\n`;
+          errorMessage += `     Error: ${attempt.diagnostics.error}\n`;
+          
+          // ✅ DYNAMIC HINT: Resolver-provided env vars
+          if (attempt.diagnostics.requiredEnvVars?.length) {
+            errorMessage += `     Required env vars: ${attempt.diagnostics.requiredEnvVars.join(', ')}\n`;
+          }
+          
+          // ✅ DYNAMIC HINT: Resolver-provided docs link
+          if (attempt.diagnostics.documentationUrl) {
+            errorMessage += `     Docs: ${attempt.diagnostics.documentationUrl}\n`;
+          }
+        }
+      });
 
-// ✅ ACCURATE REMEDIATION (no obsolete "remove Action keyword" hint)
-const failed = resolverAttempts.filter(a => a.status === 'failed');
-const allSkipped = failed.length === 0;
+      // ✅ ACCURATE REMEDIATION (NO OBSOLETE "REMOVE ACTION KEYWORD" HINT)
+      const failed = resolverAttempts.filter(a => a.status === 'failed');
+      const allSkipped = failed.length === 0;
 
-errorMessage += `\n💡 How to fix:\n`;
+      errorMessage += `\n💡 How to fix:\n`;
 
-if (allSkipped) {
-  // Generic guidance for skipped actions (never mention "Action" keyword)
-  errorMessage += `  • Verify the action matches a resolver's capabilities:\n`;
-  errorMessage += `    → Check resolver documentation for supported actions\n`;
-  errorMessage += `    → Ensure correct resolver package is installed\n`;
-  errorMessage += `    → Run with --verbose to see resolver matching details\n`;
-} else {
-  // At least one resolver attempted but failed
-  errorMessage += `  • Address resolver errors shown above:\n`;
-  errorMessage += `    → Set required environment variables (if listed)\n`;
-  errorMessage += `    → Verify inputs exist in workflow context\n`;
-  errorMessage += `    → Check resolver documentation for requirements\n`;
-  
-  // Pattern-based hints (generic, not hardcoded to specific resolvers)
-  const envVarPattern = /environment variable|env\.|process\.env|missing.*path/i;
-  if (failed.some(f => envVarPattern.test(f.diagnostics.error))) {
-    errorMessage += `    → Example (PowerShell): $env:VARIABLE="value"\n`;
-    errorMessage += `    → Example (Linux/macOS): export VARIABLE="value"\n`;
-  }
-  
-  const dbPattern = /database|db\.|sqlite|postgres|mysql|mongodb/i;
-  if (failed.some(f => dbPattern.test(f.diagnostics.error))) {
-    errorMessage += `    → Ensure database file/connection exists and path is correct\n`;
-  }
-  
-  const authPattern = /auth|api key|token|credential/i;
-  if (failed.some(f => authPattern.test(f.diagnostics.error))) {
-    errorMessage += `    → Verify API keys/tokens are set in environment variables\n`;
-  }
-}
+      if (allSkipped) {
+        errorMessage += `  • Verify the action matches a resolver's capabilities:\n`;
+        errorMessage += `    → Check resolver documentation for supported actions\n`;
+        errorMessage += `    → Ensure correct resolver package is installed\n`;
+        errorMessage += `    → Run with --verbose to see resolver matching details\n`;
+      } else {
+        errorMessage += `  • Address resolver errors shown above:\n`;
+        errorMessage += `    → Set required environment variables (if listed)\n`;
+        errorMessage += `    → Verify inputs exist in workflow context\n`;
+        errorMessage += `    → Check resolver documentation for requirements\n`;
+        
+        // Pattern-based hints (generic, not hardcoded)
+        const envVarPattern = /environment variable|env\.|process\.env|missing.*path/i;
+        if (failed.some(f => envVarPattern.test(f.diagnostics.error))) {
+          errorMessage += `    → Example (PowerShell): $env:VARIABLE="value"\n`;
+          errorMessage += `    → Example (Linux/macOS): export VARIABLE="value"\n`;
+        }
+        
+        const dbPattern = /database|db\.|sqlite|postgres|mysql|mongodb/i;
+        if (failed.some(f => dbPattern.test(f.diagnostics.error))) {
+          errorMessage += `    → Ensure database file/connection exists and path is correct\n`;
+        }
+        
+        const authPattern = /auth|api key|token|credential/i;
+        if (failed.some(f => authPattern.test(f.diagnostics.error))) {
+          errorMessage += `    → Verify API keys/tokens are set in environment variables\n`;
+        }
+      }
 
-// ✅ Always show generic troubleshooting path
-errorMessage += `\n  • Resolver documentation:\n`;
-let hasDocs = false;
-resolverAttempts.forEach(attempt => {
-  if (attempt.diagnostics?.documentationUrl) {
-    errorMessage += `    → ${attempt.name}: ${attempt.diagnostics.documentationUrl}\n`;
-    hasDocs = true;
-  }
-});
-if (!hasDocs) {
-  errorMessage += `    → Search "@o-lang/${attempt.name}" on npmjs.com\n`;
-}
+      // ✅ FIXED: NO SCOPE ERROR IN FALLBACK DOCUMENTATION URL
+      errorMessage += `\n  • Resolver documentation:\n`;
+      let hasDocs = false;
+      resolverAttempts.forEach(attempt => {
+        if (attempt.diagnostics?.documentationUrl) {
+          errorMessage += `    → ${attempt.name}: ${attempt.diagnostics.documentationUrl}\n`;
+          hasDocs = true;
+        }
+      });
+      if (!hasDocs) {
+        errorMessage += `    → Visit https://www.npmjs.com/search?q=%40o-lang for resolver packages\n`;
+      }
 
-errorMessage += `\n🛑 Workflow halted to prevent unsafe data propagation to LLMs.`;
-throw new Error(errorMessage);
+      errorMessage += `\n🛑 Workflow halted to prevent unsafe data propagation to LLMs.`;
+      throw new Error(errorMessage);
     };
 
     switch (stepType) {
@@ -656,7 +653,6 @@ throw new Error(errorMessage);
             }
             
             // Check if the target variable was set in this level
-            // For now, we'll assume the last saveAs in the level is the result
             if (levelSteps.length > 0) {
               const lastStep = levelSteps[levelSteps.length - 1];
               if (lastStep.saveAs && this.context[lastStep.saveAs] !== undefined) {
@@ -737,7 +733,6 @@ throw new Error(errorMessage);
           console.log(`❓ Prompt: ${step.question}`);
         }
         // In non-interactive mode, leave as no-op
-        // (Could integrate with stdin or API in future)
         break;
       }
 
@@ -752,7 +747,6 @@ throw new Error(errorMessage);
           const symbol = symbolMatch.replace(/[{}]/g, '');
           if (!this._requireSemantic(symbol, 'emit')) {
             shouldEmit = false;
-            // Continue to validate all symbols (for complete error reporting)
           }
         }
         
@@ -782,14 +776,13 @@ throw new Error(errorMessage);
       case 'persist': {
         // ✅ SEMANTIC VALIDATION: Require symbol exists
         if (!this._requireSemantic(step.variable, 'persist')) {
-          // Default policy: Skip persist (safe)
           if (this.verbose) {
             console.log(`⏭️ Skipped persist for undefined "${step.variable}"`);
           }
           break;
         }
         
-        const sourceValue = this.context[step.variable]; // Now guaranteed defined
+        const sourceValue = this.context[step.variable];
         const outputPath = path.resolve(process.cwd(), step.target);
         const outputDir = path.dirname(outputPath);
         if (!fs.existsSync(outputDir)) {
@@ -826,7 +819,7 @@ throw new Error(errorMessage);
           break;
         }
         
-        const sourceValue = this.context[step.variable]; // Now guaranteed defined
+        const sourceValue = this.context[step.variable];
 
         try {
           switch (this.dbClient.type) {
@@ -928,7 +921,6 @@ throw new Error(errorMessage);
       if (this._requireSemantic(key, 'return')) {
         result[key] = this.context[key];
       }
-      // Skip undefined return values (safe default)
     }
     return result;
   }
