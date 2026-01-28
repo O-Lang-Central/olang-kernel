@@ -8,6 +8,18 @@ function normalizeSymbol(raw) {
   return raw.split(/\s+/)[0].replace(/[^\w$]/g, '');
 }
 
+// ✅ ACTION NORMALIZATION HELPER (NEW)
+// Strip decorative prefixes for consistent resolver matching
+function normalizeAction(actionRaw) {
+  if (typeof actionRaw !== 'string') return actionRaw;
+  
+  // Strip optional decorative prefixes (case-insensitive)
+  // Preserves semantic prefixes: "Ask", "Use" (handled as separate step types)
+  return actionRaw
+    .replace(/^(Action|Do|Perform|Execute|Run|Call|Invoke)\s+/i, '')
+    .trim();
+}
+
 function parse(content, filename = '<unknown>') {
   if (typeof content === 'string') {
     // ✅ Strip UTF-8 BOM if present (0xFEFF = Unicode BOM)
@@ -257,16 +269,20 @@ function parseWorkflowLines(lines, filename) {
       }
     }
 
-    // Step declaration
+    // Step declaration - ✅ NORMALIZE ACTION HERE
     const stepMatch = line.match(/^Step\s+(\d+)\s*:\s*(.+)$/i);
     if (stepMatch) {
       flushCurrentStep(); // ✅ Flush previous step
       const stepNumber = parseInt(stepMatch[1], 10);
-      const stepContent = stepMatch[2];
+      let stepContent = stepMatch[2].trim();
+      
+      // ✅ CRITICAL: Normalize action syntax BEFORE storing in AST
+      stepContent = normalizeAction(stepContent);
+      
       currentStep = {
         type: 'action',
         stepNumber: stepNumber,
-        actionRaw: stepContent,
+        actionRaw: stepContent,  // ← CLEAN, normalized action string
         saveAs: null,
         constraints: {}
       };
@@ -367,13 +383,13 @@ function parseWorkflowLines(lines, filename) {
       continue;
     }
 
-    // Use (for Notify-like actions)
+    // Use (for Notify-like actions) - ✅ NORMALIZE TOOL HERE
     const useMatch = line.match(/^Use\s+(.+)$/i);
     if (useMatch) {
       flushCurrentStep();
       workflow.steps.push({
         type: 'use',
-        tool: useMatch[1].trim(),
+        tool: normalizeAction(useMatch[1].trim()),  // ✅ Normalize tool name
         stepNumber: workflow.steps.length + 1,
         saveAs: null,
         constraints: {}
@@ -381,13 +397,13 @@ function parseWorkflowLines(lines, filename) {
       continue;
     }
 
-    // Ask (for Notify/resolver calls)
+    // Ask (for Notify/resolver calls) - ✅ NORMALIZE TARGET HERE
     const askMatch = line.match(/^Ask\s+(.+)$/i);
     if (askMatch) {
       flushCurrentStep();
       workflow.steps.push({
         type: 'ask',
-        target: askMatch[1].trim(),
+        target: normalizeAction(askMatch[1].trim()),  // ✅ Normalize target
         stepNumber: workflow.steps.length + 1,
         saveAs: null,
         constraints: {}
@@ -409,12 +425,12 @@ function parseWorkflowLines(lines, filename) {
         currentStep = {
           type: 'action',
           stepNumber: workflow.steps.length + 1,
-          actionRaw: line,
+          actionRaw: normalizeAction(line),  // ✅ Normalize fallback actions too
           saveAs: null,
           constraints: {}
         };
       } else {
-        currentStep.actionRaw += ' ' + line;
+        currentStep.actionRaw += ' ' + normalizeAction(line);
       }
     }
   }
@@ -450,7 +466,7 @@ function parseWorkflowLines(lines, filename) {
   return workflow;
 }
 
-// Parses blocks (for parallel, if, escalation levels)
+// Parses blocks (for parallel, if, escalation levels) - ✅ UPDATED FOR NORMALIZATION
 function parseBlock(lines) {
   const steps = [];
   let current = null;
@@ -466,13 +482,20 @@ function parseBlock(lines) {
     line = line.trim();
     if (!line || line.startsWith('#')) continue;
 
+    // Step declaration in block - ✅ NORMALIZE ACTION HERE
     const stepMatch = line.match(/^Step\s+(\d+)\s*:\s*(.+)$/i);
     if (stepMatch) {
       flush();
+      const stepNumber = parseInt(stepMatch[1], 10);
+      let stepContent = stepMatch[2].trim();
+      
+      // ✅ CRITICAL: Normalize action syntax in blocks too
+      stepContent = normalizeAction(stepContent);
+      
       current = {
         type: 'action',
-        stepNumber: parseInt(stepMatch[1], 10),
-        actionRaw: stepMatch[2].trim(),
+        stepNumber: stepNumber,
+        actionRaw: stepContent,
         saveAs: null,
         constraints: {}
       };
@@ -522,17 +545,29 @@ function parseBlock(lines) {
       continue;
     }
 
+    // Use in block - ✅ NORMALIZE TOOL HERE
     const useMatch = line.match(/^Use\s+(.+)$/i);
     if (useMatch) {
       flush();
-      steps.push({ type: 'use', tool: useMatch[1].trim(), saveAs: null, constraints: {} });
+      steps.push({ 
+        type: 'use', 
+        tool: normalizeAction(useMatch[1].trim()),  // ✅ Normalize
+        saveAs: null, 
+        constraints: {} 
+      });
       continue;
     }
 
+    // Ask in block - ✅ NORMALIZE TARGET HERE
     const askMatch = line.match(/^Ask\s+(.+)$/i);
     if (askMatch) {
       flush();
-      steps.push({ type: 'ask', target: askMatch[1].trim(), saveAs: null, constraints: {} });
+      steps.push({ 
+        type: 'ask', 
+        target: normalizeAction(askMatch[1].trim()),  // ✅ Normalize
+        saveAs: null, 
+        constraints: {} 
+      });
       continue;
     }
 
@@ -558,7 +593,7 @@ function parseBlock(lines) {
 
     // Fallback
     if (current) {
-      current.actionRaw += ' ' + line;
+      current.actionRaw += ' ' + normalizeAction(line);
     }
   }
 
@@ -590,4 +625,4 @@ function validate(workflow) {
   return errors;
 }
 
-module.exports = { parse, parseFromFile, parseLines, validate };
+module.exports = { parse, parseFromFile, parseLines, validate, normalizeAction };

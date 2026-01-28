@@ -301,6 +301,36 @@ class RuntimeAPI {
   }
 
   // -----------------------------
+  // ✅ SAFE INTERPOLATION HELPER (NEW - CRITICAL FOR HALLUCINATION PREVENTION)
+  // -----------------------------
+  _safeInterpolate(template, context, contextType = 'action') {
+    return template.replace(/\{([^\}]+)\}/g, (_, path) => {
+      const value = this.getNested(context, path.trim());
+      
+      if (value === undefined) {
+        return `{${path}}`; // Preserve placeholder for downstream validation
+      }
+      
+      // 🔒 SAFETY GUARD: Block object/array interpolation into string contexts
+      if (value !== null && typeof value === 'object') {
+        const type = Array.isArray(value) ? 'array' : 'object';
+        const keys = Object.keys(value).length > 0 
+          ? Object.keys(value).join(', ') 
+          : '(empty)';
+        
+        throw new Error(
+          `[O-Lang SAFETY] Cannot interpolate ${type} "{${path}}" into ${contextType}.\n` +
+          `  → Contains fields: ${keys}\n` +
+          `  → Use dot notation: "{${path}.field}" (e.g., {account_info.balance})\n` +
+          `\n🛑 Halting to prevent data corruption → LLM hallucination.`
+        );
+      }
+      
+      return String(value);
+    });
+  }
+
+  // -----------------------------
   // Step execution
   // -----------------------------
   async executeStep(step, agentResolver) {
@@ -423,80 +453,82 @@ class RuntimeAPI {
       }
 
       // ✅ BUILD DYNAMIC, ACTIONABLE ERROR MESSAGE
-      let errorMessage = `[O-Lang SAFETY] No resolver handled action: "${action}"\n\n`;
-      errorMessage += `Attempted resolvers:\n`;
+      // ✅ BUILD DYNAMIC, ACTIONABLE ERROR MESSAGE (NO HARDCODED HINTS)
+let errorMessage = `[O-Lang SAFETY] No resolver handled action: "${action}"\n\n`;
+errorMessage += `Attempted resolvers:\n`;
 
-      resolverAttempts.forEach((attempt, i) => {
-        const namePad = attempt.name.padEnd(30);
-        if (attempt.status === 'skipped') {
-          errorMessage += `  ${i + 1}. ${namePad} → SKIPPED (not applicable to this action)\n`;
-        } else {
-          errorMessage += `  ${i + 1}. ${namePad} → FAILED\n`;
-          errorMessage += `     Error: ${attempt.diagnostics.error}\n`;
-          
-          // ✅ DYNAMIC HINT: Resolver-provided env vars
-          if (attempt.diagnostics.requiredEnvVars?.length) {
-            errorMessage += `     Required env vars: ${attempt.diagnostics.requiredEnvVars.join(', ')}\n`;
-          }
-          
-          // ✅ DYNAMIC HINT: Resolver-provided docs link
-          if (attempt.diagnostics.documentationUrl) {
-            errorMessage += `     Docs: ${attempt.diagnostics.documentationUrl}\n`;
-          }
-        }
-      });
+resolverAttempts.forEach((attempt, i) => {
+  const namePad = attempt.name.padEnd(30);
+  if (attempt.status === 'skipped') {
+    errorMessage += `  ${i + 1}. ${namePad} → SKIPPED (action not recognized)\n`;
+  } else {
+    errorMessage += `  ${i + 1}. ${namePad} → FAILED\n`;
+    errorMessage += `     Error: ${attempt.diagnostics.error}\n`;
+    
+    // ✅ DYNAMIC HINT: Resolver-provided env vars (if available)
+    if (attempt.diagnostics.requiredEnvVars?.length) {
+      errorMessage += `     Required env vars: ${attempt.diagnostics.requiredEnvVars.join(', ')}\n`;
+    }
+    
+    // ✅ DYNAMIC HINT: Resolver-provided docs link (if available)
+    if (attempt.diagnostics.documentationUrl) {
+      errorMessage += `     Docs: ${attempt.diagnostics.documentationUrl}\n`;
+    }
+  }
+});
 
-      // ✅ DYNAMIC REMEDIATION (no hardcoded resolver names)
-      const failed = resolverAttempts.filter(a => a.status === 'failed');
-      const allSkipped = failed.length === 0;
+// ✅ ACCURATE REMEDIATION (no obsolete "remove Action keyword" hint)
+const failed = resolverAttempts.filter(a => a.status === 'failed');
+const allSkipped = failed.length === 0;
 
-      errorMessage += `\n💡 How to fix:\n`;
+errorMessage += `\n💡 How to fix:\n`;
 
-      if (allSkipped) {
-        // Likely action syntax mismatch
-        errorMessage += `  • Action syntax may not match resolver expectations\n`;
-        errorMessage += `    → Try removing "Action" keyword: bank-account-lookup "{id}"\n`;
-        errorMessage += `    → NOT: Action bank-account-lookup "{id}"\n`;
-        errorMessage += `  • Verify correct resolver is installed for this action type\n`;
-      } else {
-        // At least one resolver attempted but failed
-        errorMessage += `  • Check resolver requirements:\n`;
-        errorMessage += `    → Run workflow with --verbose flag for detailed logs\n`;
-        errorMessage += `    → Ensure required environment variables are set\n`;
-        
-        // Pattern-based hints (generic, not hardcoded)
-        const envVarPattern = /environment variable|env\.|process\.env|missing.*path/i;
-        if (failed.some(f => envVarPattern.test(f.diagnostics.error))) {
-          errorMessage += `    → Example (PowerShell): $env:VARIABLE="value"\n`;
-          errorMessage += `    → Example (Linux/macOS): export VARIABLE="value"\n`;
-        }
-        
-        const dbPattern = /database|db\.|sqlite|postgres|mysql|mongodb/i;
-        if (failed.some(f => dbPattern.test(f.diagnostics.error))) {
-          errorMessage += `    → Ensure database file/connection exists and path is correct\n`;
-        }
-        
-        const authPattern = /auth|api key|token|credential/i;
-        if (failed.some(f => authPattern.test(f.diagnostics.error))) {
-          errorMessage += `    → Verify API keys/tokens are set in environment variables\n`;
-        }
-      }
+if (allSkipped) {
+  // Generic guidance for skipped actions (never mention "Action" keyword)
+  errorMessage += `  • Verify the action matches a resolver's capabilities:\n`;
+  errorMessage += `    → Check resolver documentation for supported actions\n`;
+  errorMessage += `    → Ensure correct resolver package is installed\n`;
+  errorMessage += `    → Run with --verbose to see resolver matching details\n`;
+} else {
+  // At least one resolver attempted but failed
+  errorMessage += `  • Address resolver errors shown above:\n`;
+  errorMessage += `    → Set required environment variables (if listed)\n`;
+  errorMessage += `    → Verify inputs exist in workflow context\n`;
+  errorMessage += `    → Check resolver documentation for requirements\n`;
+  
+  // Pattern-based hints (generic, not hardcoded to specific resolvers)
+  const envVarPattern = /environment variable|env\.|process\.env|missing.*path/i;
+  if (failed.some(f => envVarPattern.test(f.diagnostics.error))) {
+    errorMessage += `    → Example (PowerShell): $env:VARIABLE="value"\n`;
+    errorMessage += `    → Example (Linux/macOS): export VARIABLE="value"\n`;
+  }
+  
+  const dbPattern = /database|db\.|sqlite|postgres|mysql|mongodb/i;
+  if (failed.some(f => dbPattern.test(f.diagnostics.error))) {
+    errorMessage += `    → Ensure database file/connection exists and path is correct\n`;
+  }
+  
+  const authPattern = /auth|api key|token|credential/i;
+  if (failed.some(f => authPattern.test(f.diagnostics.error))) {
+    errorMessage += `    → Verify API keys/tokens are set in environment variables\n`;
+  }
+}
 
-      // ✅ Always show generic troubleshooting path
-      errorMessage += `\n  • Resolver documentation:\n`;
-      let hasDocs = false;
-      resolverAttempts.forEach(attempt => {
-        if (attempt.diagnostics?.documentationUrl) {
-          errorMessage += `    → ${attempt.name}: ${attempt.diagnostics.documentationUrl}\n`;
-          hasDocs = true;
-        }
-      });
-      if (!hasDocs) {
-        errorMessage += `    → Search "@o-lang/<resolver-name>" on npmjs.com\n`;
-      }
+// ✅ Always show generic troubleshooting path
+errorMessage += `\n  • Resolver documentation:\n`;
+let hasDocs = false;
+resolverAttempts.forEach(attempt => {
+  if (attempt.diagnostics?.documentationUrl) {
+    errorMessage += `    → ${attempt.name}: ${attempt.diagnostics.documentationUrl}\n`;
+    hasDocs = true;
+  }
+});
+if (!hasDocs) {
+  errorMessage += `    → Search "@o-lang/${attempt.name}" on npmjs.com\n`;
+}
 
-      errorMessage += `\n🛑 Workflow halted to prevent unsafe data propagation to LLMs.`;
-      throw new Error(errorMessage);
+errorMessage += `\n🛑 Workflow halted to prevent unsafe data propagation to LLMs.`;
+throw new Error(errorMessage);
     };
 
     switch (stepType) {
@@ -507,10 +539,8 @@ class RuntimeAPI {
       }
 
       case 'action': {
-        const action = step.actionRaw.replace(/\{([^\}]+)\}/g, (_, path) => {
-          const value = this.getNested(this.context, path.trim());
-          return value !== undefined ? String(value) : `{${path}}`;
-        });
+        // ✅ SAFE INTERPOLATION: Block object→string coercion BEFORE resolver invocation
+        const action = this._safeInterpolate(step.actionRaw, this.context, 'action step');
 
         const mathCall = action.match(/^(add|subtract|multiply|divide|sum|avg|min|max|round|floor|ceil|abs)\((.*)\)$/i);
         if (mathCall) {
@@ -533,13 +563,17 @@ class RuntimeAPI {
       }
 
       case 'use': {
-        const res = await runResolvers(`Use ${step.tool}`);
+        // ✅ SAFE INTERPOLATION for tool name
+        const tool = this._safeInterpolate(step.tool, this.context, 'tool name');
+        const res = await runResolvers(`Use ${tool}`);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;
       }
 
       case 'ask': {
-        const res = await runResolvers(`Ask ${step.target}`);
+        // ✅ SAFE INTERPOLATION: CRITICAL for LLM prompts (hallucination prevention)
+        const target = this._safeInterpolate(step.target, this.context, 'LLM prompt');
+        const res = await runResolvers(`Ask ${target}`);
         if (step.saveAs) this.context[step.saveAs] = res;
         break;
       }
@@ -729,10 +763,8 @@ class RuntimeAPI {
           break;
         }
         
-        const payload = step.payload.replace(/\{([^\}]+)\}/g, (_, path) => {
-          const value = this.getNested(this.context, path.trim());
-          return value !== undefined ? String(value) : `{${path}}`;
-        });
+        // ✅ SAFE INTERPOLATION for emit payload
+        const payload = this._safeInterpolate(step.payload, this.context, 'emit payload');
         
         this.emit(step.event, { 
           payload: payload,
