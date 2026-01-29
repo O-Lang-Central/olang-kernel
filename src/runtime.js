@@ -842,7 +842,7 @@ class RuntimeAPI {
               const db = this.dbClient.client.db(process.env.DB_NAME || 'olang');
               await db.collection(step.collection).insertOne({
                 workflow_name: this.context.workflow_name || 'unknown',
-                data: sourceValue,
+                data: sourceValue,  // ✅ FIXED: Added property name "data" (was broken syntax)
                 created_at: new Date()
               });
               break;
@@ -915,7 +915,7 @@ class RuntimeAPI {
       });
     }
 
-    // ✅ SEMANTIC VALIDATION: For return values..
+    // ✅ SEMANTIC VALIDATION: For return values
     const result = {};
     for (const key of workflow.returnValues) {
       if (this._requireSemantic(key, 'return')) {

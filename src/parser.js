@@ -1,6 +1,6 @@
 const fs = require('fs');
 
-// ✅ Symbol normalization helper (backward compatible)
+// ✅ Symbol normalization helper (backward compatible - SAFE to keep)
 function normalizeSymbol(raw) {
   if (!raw) return raw;
   // Take only the first word (stop at first whitespace)
@@ -8,17 +8,7 @@ function normalizeSymbol(raw) {
   return raw.split(/\s+/)[0].replace(/[^\w$]/g, '');
 }
 
-// ✅ ACTION NORMALIZATION HELPER (NEW)
-// Strip decorative prefixes for consistent resolver matching
-function normalizeAction(actionRaw) {
-  if (typeof actionRaw !== 'string') return actionRaw;
-  
-  // Strip optional decorative prefixes (case-insensitive)
-  // Preserves semantic prefixes: "Ask", "Use" (handled as separate step types)
-  return actionRaw
-    .replace(/^(Action|Do|Perform|Execute|Run|Call|Invoke)\s+/i, '')
-    .trim();
-}
+// ❌ REMOVED: normalizeAction() function (was stripping "Action" prefix → broke resolver matching)
 
 function parse(content, filename = '<unknown>') {
   if (typeof content === 'string') {
@@ -269,27 +259,24 @@ function parseWorkflowLines(lines, filename) {
       }
     }
 
-    // Step declaration - ✅ NORMALIZE ACTION HERE
+    // Step declaration - ✅ PRESERVE ACTION EXACTLY (NO NORMALIZATION)
     const stepMatch = line.match(/^Step\s+(\d+)\s*:\s*(.+)$/i);
     if (stepMatch) {
       flushCurrentStep(); // ✅ Flush previous step
       const stepNumber = parseInt(stepMatch[1], 10);
-      let stepContent = stepMatch[2].trim();
-      
-      // ✅ CRITICAL: Normalize action syntax BEFORE storing in AST
-      stepContent = normalizeAction(stepContent);
+      const stepContent = stepMatch[2].trim();  // ← PRESERVED EXACTLY (no normalizeAction)
       
       currentStep = {
         type: 'action',
         stepNumber: stepNumber,
-        actionRaw: stepContent,  // ← CLEAN, normalized action string
+        actionRaw: stepContent,  // ← CRITICAL: No normalization here
         saveAs: null,
         constraints: {}
       };
       continue;
     }
 
-    // Save as - ✅ Apply normalization
+    // Save as - ✅ Apply normalization (safe for symbol names)
     const saveMatch = line.match(/^Save as\s+(.+)$/i);
     if (saveMatch && currentStep) {
       currentStep.saveAs = normalizeSymbol(saveMatch[1].trim());
@@ -383,13 +370,13 @@ function parseWorkflowLines(lines, filename) {
       continue;
     }
 
-    // Use (for Notify-like actions) - ✅ NORMALIZE TOOL HERE
+    // Use (for Notify-like actions) - ✅ PRESERVE TOOL EXACTLY (NO NORMALIZATION)
     const useMatch = line.match(/^Use\s+(.+)$/i);
     if (useMatch) {
       flushCurrentStep();
       workflow.steps.push({
         type: 'use',
-        tool: normalizeAction(useMatch[1].trim()),  // ✅ Normalize tool name
+        tool: useMatch[1].trim(),  // ← PRESERVED EXACTLY (no normalizeAction)
         stepNumber: workflow.steps.length + 1,
         saveAs: null,
         constraints: {}
@@ -397,13 +384,13 @@ function parseWorkflowLines(lines, filename) {
       continue;
     }
 
-    // Ask (for Notify/resolver calls) - ✅ NORMALIZE TARGET HERE
+    // Ask (for Notify/resolver calls) - ✅ PRESERVE TARGET EXACTLY (NO NORMALIZATION)
     const askMatch = line.match(/^Ask\s+(.+)$/i);
     if (askMatch) {
       flushCurrentStep();
       workflow.steps.push({
         type: 'ask',
-        target: normalizeAction(askMatch[1].trim()),  // ✅ Normalize target
+        target: askMatch[1].trim(),  // ← PRESERVED EXACTLY (no normalizeAction)
         stepNumber: workflow.steps.length + 1,
         saveAs: null,
         constraints: {}
@@ -425,12 +412,12 @@ function parseWorkflowLines(lines, filename) {
         currentStep = {
           type: 'action',
           stepNumber: workflow.steps.length + 1,
-          actionRaw: normalizeAction(line),  // ✅ Normalize fallback actions too
+          actionRaw: line,  // ← PRESERVED EXACTLY (no normalizeAction)
           saveAs: null,
           constraints: {}
         };
       } else {
-        currentStep.actionRaw += ' ' + normalizeAction(line);
+        currentStep.actionRaw += ' ' + line;  // ← PRESERVED EXACTLY (no normalizeAction)
       }
     }
   }
@@ -466,7 +453,7 @@ function parseWorkflowLines(lines, filename) {
   return workflow;
 }
 
-// Parses blocks (for parallel, if, escalation levels) - ✅ UPDATED FOR NORMALIZATION
+// Parses blocks (for parallel, if, escalation levels) - ✅ PRESERVE ALL FUNCTIONALITY
 function parseBlock(lines) {
   const steps = [];
   let current = null;
@@ -482,20 +469,17 @@ function parseBlock(lines) {
     line = line.trim();
     if (!line || line.startsWith('#')) continue;
 
-    // Step declaration in block - ✅ NORMALIZE ACTION HERE
+    // Step declaration in block - ✅ PRESERVE ACTION EXACTLY (NO NORMALIZATION)
     const stepMatch = line.match(/^Step\s+(\d+)\s*:\s*(.+)$/i);
     if (stepMatch) {
       flush();
       const stepNumber = parseInt(stepMatch[1], 10);
-      let stepContent = stepMatch[2].trim();
-      
-      // ✅ CRITICAL: Normalize action syntax in blocks too
-      stepContent = normalizeAction(stepContent);
+      const stepContent = stepMatch[2].trim();  // ← PRESERVED EXACTLY
       
       current = {
         type: 'action',
         stepNumber: stepNumber,
-        actionRaw: stepContent,
+        actionRaw: stepContent,  // ← CRITICAL: No normalization
         saveAs: null,
         constraints: {}
       };
@@ -545,26 +529,26 @@ function parseBlock(lines) {
       continue;
     }
 
-    // Use in block - ✅ NORMALIZE TOOL HERE
+    // Use in block - ✅ PRESERVE TOOL EXACTLY (NO NORMALIZATION)
     const useMatch = line.match(/^Use\s+(.+)$/i);
     if (useMatch) {
       flush();
       steps.push({ 
         type: 'use', 
-        tool: normalizeAction(useMatch[1].trim()),  // ✅ Normalize
+        tool: useMatch[1].trim(),  // ← PRESERVED EXACTLY
         saveAs: null, 
         constraints: {} 
       });
       continue;
     }
 
-    // Ask in block - ✅ NORMALIZE TARGET HERE
+    // Ask in block - ✅ PRESERVE TARGET EXACTLY (NO NORMALIZATION)
     const askMatch = line.match(/^Ask\s+(.+)$/i);
     if (askMatch) {
       flush();
       steps.push({ 
         type: 'ask', 
-        target: normalizeAction(askMatch[1].trim()),  // ✅ Normalize
+        target: askMatch[1].trim(),  // ← PRESERVED EXACTLY
         saveAs: null, 
         constraints: {} 
       });
@@ -593,7 +577,7 @@ function parseBlock(lines) {
 
     // Fallback
     if (current) {
-      current.actionRaw += ' ' + normalizeAction(line);
+      current.actionRaw += ' ' + line;  // ← PRESERVED EXACTLY (no normalizeAction)
     }
   }
 
@@ -625,4 +609,4 @@ function validate(workflow) {
   return errors;
 }
 
-module.exports = { parse, parseFromFile, parseLines, validate, normalizeAction };
+module.exports = { parse, parseFromFile, parseLines, validate };
