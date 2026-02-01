@@ -566,14 +566,18 @@ class RuntimeAPI {
         if (step.saveAs) this.context[step.saveAs] = res;
         break;
       }
-
-      case 'ask': {
-        // ✅ SAFE INTERPOLATION: CRITICAL for LLM prompts (hallucination prevention)
-        const target = this._safeInterpolate(step.target, this.context, 'LLM prompt');
-        const res = await runResolvers(`Ask ${target}`);
-        if (step.saveAs) this.context[step.saveAs] = res;
-        break;
-      }
+case 'ask': {
+  const target = this._safeInterpolate(step.target, this.context, 'LLM prompt');
+  
+  // ✅ ADD THIS CHECK
+  if (/{[^}]+}/.test(target)) {
+    throw new Error(`[O-Lang] Unresolved variables in prompt: "${target}"`);
+  }
+  
+  const res = await runResolvers(`Ask ${target}`);
+  if (step.saveAs) this.context[step.saveAs] = res;
+  break;
+}
 
       case 'evolve': {
         const { targetResolver, feedback } = step;
