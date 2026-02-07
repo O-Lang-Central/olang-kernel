@@ -1,12 +1,14 @@
 #!/usr/bin/env node
+
 const { Command } = require('commander');
-const { parse } = require('./src/parser');
-const { execute } = require('./src/runtime');
+const { parse } = require('../src/parser');
+const { execute } = require('../src/runtime');
 const fs = require('fs');
 const path = require('path');
+const { createRequire } = require('module');
 
-// === ADDED: Load package.json for version (1 line added) ===
-const pkg = require('./package.json');
+// === Load kernel package.json for version ===
+const pkg = require('../package.json');
 
 /**
  * Enforce .ol extension ONLY (CLI only)
@@ -21,21 +23,21 @@ function ensureOlExtension(filename) {
 }
 
 /**
- * Default mock resolver (for demo use)
+ * Default mock resolver (for demo / fallback)
  */
-async function defaultMockResolver(action, context) {
-  if (!action || typeof action !== 'string') return `[Unhandled: ${String(action)}]`;
+async function defaultMockResolver(action) {
+  if (!action || typeof action !== 'string') return undefined;
 
   if (action.startsWith('Search for ')) {
     return {
-      title: "HR Policy 2025",
-      text: "Employees are entitled to 20 days of paid leave per year.",
-      url: "mock://hr-policy"
+      title: 'HR Policy 2025',
+      text: 'Employees are entitled to 20 days of paid leave per year.',
+      url: 'mock://hr-policy'
     };
   }
 
   if (action.startsWith('Ask ')) {
-    return "✅ [Mock] Summarized for demonstration.";
+    return '✅ [Mock] Summarized for demonstration.';
   }
 
   if (action.startsWith('Notify ')) {
@@ -48,7 +50,7 @@ async function defaultMockResolver(action, context) {
     return 'Acknowledged';
   }
 
-  return `[Unhandled: ${action}]`;
+  return undefined;
 }
 defaultMockResolver.resolverName = 'defaultMockResolver';
 
@@ -67,15 +69,16 @@ async function builtInMathResolver(action, context) {
   if ((m = a.match(/^subtract\(([^,]+),\s*([^)]+)\)$/i))) return +m[1] - +m[2];
   if ((m = a.match(/^multiply\(([^,]+),\s*([^)]+)\)$/i))) return +m[1] * +m[2];
   if ((m = a.match(/^divide\(([^,]+),\s*([^)]+)\)$/i))) return +m[1] / +m[2];
-  if ((m = a.match(/^sum\(\s*\[([^\]]+)\]\s*\)$/i)))
+  if ((m = a.match(/^sum\(\s*\[([^\]]+)\]\s*\)$/i))) {
     return m[1].split(',').map(Number).reduce((a, b) => a + b, 0);
+  }
 
   return undefined;
 }
 builtInMathResolver.resolverName = 'builtInMathResolver';
 
 /**
- * Resolver chaining
+ * Create resolver chain
  */
 function createResolverChain(resolvers, verbose = false) {
   const wrapped = async (action, context) => {
@@ -95,44 +98,59 @@ function createResolverChain(resolvers, verbose = false) {
     if (verbose) console.log(`⏭️ No resolver handled "${action}"`);
     return undefined;
   };
+
   wrapped._chain = resolvers;
   return wrapped;
 }
 
 /**
- * Load a single resolver
+ * Load a single resolver (CRITICAL FIX)
+ *
+ * Resolution order:
+ * 1. User project node_modules (npm install / npm link)
+ * 2. Relative/local path
+ * 3. Error with actionable message
  */
 function loadSingleResolver(specifier) {
   if (!specifier) throw new Error('Empty resolver specifier');
 
-  if (specifier.endsWith('.json')) {
-    const manifest = JSON.parse(fs.readFileSync(specifier, 'utf8'));
-    if (manifest.protocol?.startsWith('http')) {
-      const externalResolver = async () => undefined;
-      externalResolver.resolverName = manifest.name;
-      externalResolver.manifest = manifest;
-      console.log(`🌐 Loaded external resolver: ${manifest.name}`);
-      return externalResolver;
+  // Anchor resolution to the CALLING PROJECT, not the kernel
+  const projectRequire = createRequire(
+    path.join(process.cwd(), 'package.json')
+  );
+
+  let resolver;
+  let resolvedFrom = 'unknown';
+
+  try {
+    resolver = projectRequire(specifier);
+    resolvedFrom = 'project';
+  } catch {
+    try {
+      resolver = require(path.resolve(process.cwd(), specifier));
+      resolvedFrom = 'local';
+    } catch {
+      throw new Error(
+        `Resolver "${specifier}" not found.\n` +
+        `Install it in your project with:\n` +
+        `  npm install ${specifier}\n` +
+        `or link it with:\n` +
+        `  npm link ${specifier}`
+      );
     }
   }
 
-  let resolver;
-  const pkgName = specifier.startsWith('.') || specifier.startsWith('/')
-    ? path.basename(specifier, path.extname(specifier))
-    : specifier.replace(/^@[^/]+\//, '');
-
-  try {
-    resolver = require(specifier);
-  } catch {
-    resolver = require(path.resolve(process.cwd(), specifier));
-  }
-
   if (typeof resolver !== 'function') {
-    throw new Error(`Resolver must export a function`);
+    throw new Error(`Resolver "${specifier}" must export a function`);
   }
 
-  resolver.resolverName ||= pkgName;
-  console.log(`📦 Loaded resolver: ${resolver.resolverName}`);
+  const name =
+    resolver.resolverName ||
+    specifier.replace(/^@[^/]+\//, '');
+
+  resolver.resolverName = name;
+
+  console.log(`📦 Loaded resolver: ${name} (${resolvedFrom})`);
   return resolver;
 }
 
@@ -142,14 +160,21 @@ function loadSingleResolver(specifier) {
 function loadResolverChain(specifiers, verbose, allowed) {
   const resolvers = [];
 
-  if (allowed.has('builtInMathResolver')) resolvers.push(builtInMathResolver);
-
-  for (const r of specifiers.map(loadSingleResolver)) {
-    if (allowed.has(r.resolverName)) resolvers.push(r);
-    else if (verbose) console.warn(`⚠️ Skipped disallowed resolver: ${r.resolverName}`);
+  if (allowed.has('builtInMathResolver')) {
+    resolvers.push(builtInMathResolver);
   }
 
-  if (allowed.has('defaultMockResolver')) resolvers.push(defaultMockResolver);
+  for (const r of specifiers.map(loadSingleResolver)) {
+    if (allowed.has(r.resolverName)) {
+      resolvers.push(r);
+    } else if (verbose) {
+      console.warn(`⚠️ Skipped disallowed resolver: ${r.resolverName}`);
+    }
+  }
+
+  if (allowed.has('defaultMockResolver')) {
+    resolvers.push(defaultMockResolver);
+  }
 
   return createResolverChain(resolvers, verbose);
 }
@@ -159,10 +184,8 @@ function loadResolverChain(specifiers, verbose, allowed) {
  */
 const program = new Command();
 
-// === ADDED: Version support (1 line added) ===
 program.version(pkg.version, '-V, --version', 'Show O-lang kernel version');
 
-// === RUN COMMAND ===
 program
   .name('olang')
   .command('run <file>')
@@ -175,17 +198,30 @@ program
   .option('-v, --verbose')
   .action(async (file, options) => {
     ensureOlExtension(file);
+
     const workflowSource = fs.readFileSync(file, 'utf8');
     const workflow = parse(workflowSource, file);
 
     const allowed = new Set(workflow.allowedResolvers);
-    const resolver = loadResolverChain(options.resolver, options.verbose, allowed);
+    const resolver = loadResolverChain(
+      options.resolver,
+      options.verbose,
+      allowed
+    );
 
-    const result = await execute(workflow, options.input, resolver, options.verbose);
+    const result = await execute(
+      workflow,
+      options.input,
+      resolver,
+      options.verbose
+    );
+
     console.log(JSON.stringify(result, null, 2));
   });
 
-// === SERVER COMMAND (✅ PROPER INTEGRATION) ===
+/**
+ * SERVER MODE
+ */
 program
   .command('server')
   .description('Start O-lang kernel in HTTP server mode')
@@ -204,10 +240,6 @@ program
       try {
         const { workflowSource, inputs = {}, resolvers = [], verbose = false } = req.body;
 
-        if (typeof workflowSource !== 'string') {
-          return reply.status(400).send({ error: 'workflowSource must be a string' });
-        }
-
         const workflow = parse(workflowSource, 'remote.ol');
         const allowed = new Set(workflow.allowedResolvers);
         const resolver = loadResolverChain(resolvers, verbose, allowed);
@@ -219,17 +251,12 @@ program
       }
     });
 
-    const PORT = parseInt(options.port, 10);
-    const HOST = options.host;
+    await fastify.listen({
+      port: Number(options.port),
+      host: options.host
+    });
 
-    try {
-      await fastify.listen({ port: PORT, host: HOST });
-      console.log(`✅ O-Lang Kernel running on http://${HOST}:${PORT}`);
-    } catch (err) {
-      console.error('❌ Failed to start server:', err);
-      process.exit(1);
-    }
+    console.log(`✅ O-Lang Kernel running on http://${options.host}:${options.port}`);
   });
 
-// === PARSE CLI ===
 program.parse(process.argv);

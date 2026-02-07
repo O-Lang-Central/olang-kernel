@@ -1,8 +1,10 @@
+// src/runtime/RuntimeAPI.js
 const fs = require('fs');
 const path = require('path');
 
 class RuntimeAPI {
   constructor({ verbose = false } = {}) {
+   console.log('✅ KERNEL FIX VERIFIED - Unwrapping active');
     this.context = {};
     this.resources = {};
     this.agentMap = {};
@@ -331,7 +333,19 @@ class RuntimeAPI {
   }
 
   // -----------------------------
-  // Step execution
+  // ✅ CRITICAL FIX: Resolver output unwrapping helper
+  // -----------------------------
+  _unwrapResolverResult(result) {
+    // Standard O-Lang resolver contract: { output: {...} } or { error: "..." }
+    if (result && typeof result === 'object' && 'output' in result && result.output !== undefined) {
+      return result.output;
+    }
+    // Legacy resolvers might return raw values
+    return result;
+  }
+
+  // -----------------------------
+  // Step execution (WHERE RESOLVERS ARE INVOKED)
   // -----------------------------
   async executeStep(step, agentResolver) {
     const stepType = step.type;
@@ -420,8 +434,11 @@ class RuntimeAPI {
 
           // ✅ ACCEPT valid result immediately (non-null/non-undefined)
           if (result !== undefined && result !== null) {
+            // ✅ CRITICAL FIX: Save raw result for debugging (like __resolver_0)
             this.context[`__resolver_${idx}`] = result;
-            return result;
+            
+            // ✅ UNWRAP before returning to workflow logic
+            return this._unwrapResolverResult(result);
           }
 
           // ⚪ Resolver skipped this action (normal behavior)
@@ -521,7 +538,7 @@ class RuntimeAPI {
         }
       });
       if (!hasDocs) {
-        errorMessage += `    → Visit https://www.npmjs.com/search?q=%40o-lang for resolver packages\n`;  // ✅ FIXED
+        errorMessage += `    → Visit https://www.npmjs.com/search?q=%40o-lang   for resolver packages\n`;  // ✅ FIXED
       }
 
       errorMessage += `\n🛑 Workflow halted to prevent unsafe data propagation to LLMs.`;
@@ -554,30 +571,40 @@ class RuntimeAPI {
           }
         }
 
-        const res = await runResolvers(action);
-        if (step.saveAs) this.context[step.saveAs] = res;
+        // ✅ CRITICAL FIX: UNWRAP resolver result BEFORE saving to context
+        const rawResult = await runResolvers(action);
+        const unwrapped = this._unwrapResolverResult(rawResult);
+        
+        if (step.saveAs) {
+          this.context[step.saveAs] = unwrapped;
+        }
         break;
       }
 
       case 'use': {
         // ✅ SAFE INTERPOLATION for tool name
         const tool = this._safeInterpolate(step.tool, this.context, 'tool name');
-        const res = await runResolvers(`Use ${tool}`);
-        if (step.saveAs) this.context[step.saveAs] = res;
+        const rawResult = await runResolvers(`Use ${tool}`);
+        const unwrapped = this._unwrapResolverResult(rawResult);
+        
+        if (step.saveAs) this.context[step.saveAs] = unwrapped;
         break;
       }
-case 'ask': {
-  const target = this._safeInterpolate(step.target, this.context, 'LLM prompt');
-  
-  // ✅ ADD THIS CHECK
-  if (/{[^}]+}/.test(target)) {
-    throw new Error(`[O-Lang] Unresolved variables in prompt: "${target}"`);
-  }
-  
-  const res = await runResolvers(`Ask ${target}`);
-  if (step.saveAs) this.context[step.saveAs] = res;
-  break;
-}
+
+      case 'ask': {
+        const target = this._safeInterpolate(step.target, this.context, 'LLM prompt');
+        
+        // ✅ ADD THIS CHECK
+        if (/{[^}]+}/.test(target)) {
+          throw new Error(`[O-Lang] Unresolved variables in prompt: "${target}"`);
+        }
+        
+        const rawResult = await runResolvers(`Ask ${target}`);
+        const unwrapped = this._unwrapResolverResult(rawResult);
+        
+        if (step.saveAs) this.context[step.saveAs] = unwrapped;
+        break;
+      }
 
       case 'evolve': {
         const { targetResolver, feedback } = step;
