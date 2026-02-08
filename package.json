@@ -1,6 +1,6 @@
 {
   "name": "@o-lang/olang",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "author": "Olalekan Ogundipe <info@workfily.com>",
   "description": "O-Lang: A governance language for user-directed, rule-enforced agent workflows",
   "main": "./src/index.js",
@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "start": "node cli.js",
-      "test": "jest"
+    "test": "jest"
   },
   "dependencies": {
     "commander": "^12.0.0",
