@@ -4,21 +4,22 @@
   "author": "Olalekan Ogundipe <info@workfily.com>",
   "description": "O-Lang: A governance language for user-directed, rule-enforced agent workflows",
   "main": "./src/index.js",
-"bin": {
-  "olang": "./cli/olang.js"
-},
+  "bin": {
+    "olang": "./cli/olang.js"
+  },
   "files": [
     "cli.js",
     "src/"
   ],
   "scripts": {
-    "start": "node cli.js"
+    "start": "node cli.js",
+      "test": "jest"
   },
   "dependencies": {
-   "commander": "^12.0.0",
-  "dotenv": "^17.2.3",
-  "lodash": "^4.17.21",
-  "fastify": "^4.26.0"
+    "commander": "^12.0.0",
+    "dotenv": "^17.2.3",
+    "fastify": "^4.26.0",
+    "lodash": "^4.17.21"
   },
   "keywords": [
     "agent",
@@ -37,5 +38,8 @@
   "homepage": "https://github.com/O-Lang-Central/olang-kernel",
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "jest": "^30.2.0"
   }
 }

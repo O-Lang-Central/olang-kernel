@@ -4,7 +4,7 @@ const path = require('path');
 
 class RuntimeAPI {
   constructor({ verbose = false } = {}) {
-   console.log('✅ KERNEL FIX VERIFIED - Unwrapping active');
+  //  console.log('✅ KERNEL FIX VERIFIED - Unwrapping active');
     this.context = {};
     this.resources = {};
     this.agentMap = {};
@@ -552,34 +552,60 @@ class RuntimeAPI {
         break;
       }
 
-      case 'action': {
-        // ✅ SAFE INTERPOLATION: Block object→string coercion BEFORE resolver invocation
-        const action = this._safeInterpolate(step.actionRaw, this.context, 'action step');
+     case 'action': {
+  // 🔒 Interpolate workflow variables first
+  let action = this._safeInterpolate(
+    step.actionRaw,
+    this.context,
+    'action step'
+  );
 
-        const mathCall = action.match(/^(add|subtract|multiply|divide|sum|avg|min|max|round|floor|ceil|abs)\((.*)\)$/i);
-        if (mathCall) {
-          const fn = mathCall[1].toLowerCase();
-          const args = mathCall[2].split(',').map(s => {
-            s = s.trim();
-            if (!isNaN(s)) return parseFloat(s);
-            return this.getNested(this.context, s.replace(/^\{|\}$/g, ''));
-          });
-          if (this.mathFunctions[fn]) {
-            const value = this.mathFunctions[fn](...args);
-            if (step.saveAs) this.context[step.saveAs] = value;
-            break;
-          }
-        }
+  // ✅ CANONICALIZATION: Normalize DSL verbs → runtime Action
+  if (action.startsWith('Ask ')) {
+    action = 'Action ' + action.slice(4);
+  } else if (action.startsWith('Use ')) {
+    action = 'Action ' + action.slice(4);
+  }
 
-        // ✅ CRITICAL FIX: UNWRAP resolver result BEFORE saving to context
-        const rawResult = await runResolvers(action);
-        const unwrapped = this._unwrapResolverResult(rawResult);
-        
-        if (step.saveAs) {
-          this.context[step.saveAs] = unwrapped;
-        }
-        break;
-      }
+  // ❌ Reject non-canonical runtime actions early
+  if (!action.startsWith('Action ')) {
+    throw new Error(
+      `[O-Lang SAFETY] Non-canonical action received: "${action}"\n` +
+      `  → Expected format: Action <resolver> <args>\n` +
+      `  → This indicates a kernel or workflow authoring error.`
+    );
+  }
+
+  // ✅ Inline math support (language feature)
+  const mathCall = action.match(
+    /^(add|subtract|multiply|divide|sum|avg|min|max|round|floor|ceil|abs)\((.*)\)$/i
+  );
+
+  if (mathCall) {
+    const fn = mathCall[1].toLowerCase();
+    const args = mathCall[2].split(',').map(s => {
+      s = s.trim();
+      if (!isNaN(s)) return parseFloat(s);
+      return this.getNested(this.context, s.replace(/^\{|\}$/g, ''));
+    });
+
+    if (this.mathFunctions[fn]) {
+      const value = this.mathFunctions[fn](...args);
+      if (step.saveAs) this.context[step.saveAs] = value;
+      break;
+    }
+  }
+
+  // ✅ Resolver dispatch receives ONLY canonical actions
+  const rawResult = await runResolvers(action);
+  const unwrapped = this._unwrapResolverResult(rawResult);
+
+  if (step.saveAs) {
+    this.context[step.saveAs] = unwrapped;
+  }
+  break;
+}
+
 
       case 'use': {
         // ✅ SAFE INTERPOLATION for tool name

@@ -1,0 +1,2 @@
+{"resolver":"fakeResolver","step":"Ask bank-account-lookup \"{customer_id}\" \"{bank_db_path}\"","timestamp":"2026-02-08T13:57:38.794Z"}
+{"resolver":"fakeResolver","step":"Ask bank-account-lookup \"{customer_id}\" \"{bank_db_path}\"","timestamp":"2026-02-08T13:57:50.920Z"}
