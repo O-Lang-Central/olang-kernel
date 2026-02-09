@@ -331,40 +331,101 @@ class RuntimeAPI {
     });
   }
 
-  // -----------------------------
-  // ✅ KERNEL-LEVEL LLM HALLUCINATION PREVENTION (ZERO WORKFLOW CHANGES)
-  // -----------------------------
-  _validateLLMOutput(output, actionContext) {
-    if (!output || typeof output !== 'string') return { passed: true };
+// -----------------------------
+// ✅ KERNEL-LEVEL LLM HALLUCINATION PREVENTION (MULTILINGUAL SEMANTIC SAFETY)
+// -----------------------------
+_validateLLMOutput(output, actionContext) {
+  if (!output || typeof output !== 'string') return { passed: true };
 
-    // 🔑 CRITICAL: Extract ONLY allowed capabilities from workflow allowlist
-    const allowedCapabilities = Array.from(this.allowedResolvers)
-      .filter(name => !name.startsWith('llm-') && name !== 'builtInMathResolver')
-      .map(name => name.replace('@o-lang/', '').replace(/-resolver$/, ''));
+  // 🔑 Extract allowed capabilities from workflow allowlist
+  const allowedCapabilities = Array.from(this.allowedResolvers)
+    .filter(name => !name.startsWith('llm-') && name !== 'builtInMathResolver')
+    .map(name => name.replace('@o-lang/', '').replace(/-resolver$/, ''));
 
-    // 🔒 Block capability hallucinations (claims to do things outside allowlist)
-    const forbiddenPatterns = [
-      { pattern: /\b(transfer|send|wire|pay|withdraw|deposit)\b/i, capability: 'transfer' },
-      { pattern: /\b(create|open|close|delete)\s+(account|profile)\b/i, capability: 'account_management' },
-      { pattern: /\bI (can|will|am able to)\s+(transfer|pay|send)/i, capability: 'unauthorized_action' }
-    ];
+  // 🔒 MULTILINGUAL INTENT DETECTION (Deterministic, No LLM Required)
+  // Patterns ordered by language family → script → frequency
+  const forbiddenPatterns = [
+    // ────────────────────────────────────────────────
+    // 🇳🇬 NIGERIAN LANGUAGES (Priority for your mission)
+    // ────────────────────────────────────────────────
+    
+    // Yoruba (yo) - Latin script
+    { pattern: /\b(fi\s+(?:owo|ẹ̀wọ̀|ewo|ku|fun|s'ọkọọ))\b/i, capability: 'transfer', lang: 'yo' },
+    { pattern: /\b(san\s+(?:owo|ẹ̀wọ̀|ewo|fun|wo|lẹsẹkẹsẹ))\b/i, capability: 'payment', lang: 'yo' },
+    { pattern: /\b(gba\s+owo)\b/i, capability: 'withdrawal', lang: 'yo' },
+    { pattern: /\b(mo\s+ti\s+(?:fi|san))\b/i, capability: 'unauthorized_action', lang: 'yo' }, // "I have transferred/paid"
+    
+    // Hausa (ha) - Latin script
+    { pattern: /\b(ciyar\s*(?:da)?|ciya\s*(?:da)?)\b/i, capability: 'transfer', lang: 'ha' },
+    { pattern: /\b(biya\s*(?:da)?|sauce\s+kuɗi)\b/i, capability: 'payment', lang: 'ha' },
+    { pattern: /\b(sahawa\s+kuɗi|sahawar)\b/i, capability: 'withdrawal', lang: 'ha' },
+    { pattern: /\b(ina\s+(?:ciyar|biya))\b/i, capability: 'unauthorized_action', lang: 'ha' }, // "I am transferring/paying"
+    
+    // Igbo (ig) - Latin script
+    { pattern: /\b(zipu\s+(?:ego|moni|isi|na))\b/i, capability: 'transfer', lang: 'ig' },
+    { pattern: /\b(buru\s+(?:ego|moni|isi))\b/i, capability: 'transfer', lang: 'ig' }, // "carry/send money"
+    { pattern: /\b(tinye\s+(?:ego|moni|isi))\b/i, capability: 'deposit', lang: 'ig' },
+    { pattern: /\b(m\s+(?:ziri|buru|zipuru))\b/i, capability: 'unauthorized_action', lang: 'ig' }, // "I sent/carried"
+    
+    // ────────────────────────────────────────────────
+    // 🌐 GLOBAL LANGUAGES (Critical mass coverage)
+    // ────────────────────────────────────────────────
+    
+    // English (en) - Baseline
+    { pattern: /\b(transfer|transferred|transferring|send|sent|sending|wire|wired|pay|paid|paying|withdraw|withdrew|withdrawal|deposit|deposited)\b/i, capability: 'financial_action', lang: 'en' },
+    { pattern: /\bI\s+(?:can|will|am able to|have|'ve|did)\s+(?:transfer|send|pay|withdraw|deposit)\b/i, capability: 'unauthorized_action', lang: 'en' },
+    
+    // French (fr) - Latin script
+    { pattern: /\b(transférer|transféré|transférant|envoyer|envoyé|payer|payé|retirer|retiré|déposer|déposé)\b/i, capability: 'financial_action', lang: 'fr' },
+    { pattern: /\b(je\s+(?:peux|vais|ai)\s+(?:transférer|envoyer|payer))\b/i, capability: 'unauthorized_action', lang: 'fr' }, // "I can transfer/send/pay"
+    
+    // Arabic (ar) - Right-to-left script (Unicode ranges)
+    { pattern: /[\u0621-\u064A]{0,3}(?:حوّل|حول|أرسل|ارسل|ادفع|ادفع|اودع|اودع|سحب|استخرج)[\u0621-\u064A]{0,3}/u, capability: 'financial_action', lang: 'ar' },
+    { pattern: /[\u0621-\u064A]{0,3}(?:أنا)\s*(?:حوّلت|أرسلت|دفعت)[\u0621-\u064A]{0,3}/u, capability: 'unauthorized_action', lang: 'ar' }, // "I transferred/sent/paid"
+    
+    // Chinese (zh) - Han script (Simplified)
+    { pattern: /[\u4e00-\u9fff]{0,2}(?:转账|转帐|支付|付款|提款|取款|存款|存入)[\u4e00-\u9fff]{0,2}/u, capability: 'financial_action', lang: 'zh' },
+    { pattern: /[\u4e00-\u9fff]{0,2}(?:我)\s*(?:已|已经)?\s*(?:转账|支付|提款)[\u4e00-\u9fff]{0,2}/u, capability: 'unauthorized_action', lang: 'zh' }, // "I have transferred/paid/withdrawn"
+    
+    // ────────────────────────────────────────────────
+    // 🛡️ CROSS-LINGUAL DECEPTION PATTERNS (Critical!)
+    // ────────────────────────────────────────────────
+    
+    // Numeric deception (works across ALL languages)
+    { pattern: /\b(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*(?:naira|ngn|₦|\$|usd|dollars|euros|€|yuan|¥)\s+(?:sent|transferred|paid|to account)\b/i, capability: 'unauthorized_action', lang: 'multi' },
+    
+    // Account number leakage (PII risk)
+    { pattern: /\b(?:account|acct|a\/c)\s*[:\-]?\s*(\d{8,})\b/i, capability: 'pii_exposure', lang: 'multi' },
+    
+    // Fake confirmation patterns
+    { pattern: /\b(successful(?:ly)?|completed|processed|confirmed|approved)\s+(?:transaction|transfer|payment)\b/i, capability: 'deceptive_claim', lang: 'multi' }
+  ];
 
-    for (const { pattern, capability } of forbiddenPatterns) {
-      if (pattern.test(output)) {
-        // ✅ Only block if capability NOT in allowlist
-        if (!allowedCapabilities.some(c => c.includes(capability) || c.includes('transfer'))) {
-          return {
-            passed: false,
-            reason: `Hallucinated "${capability}" capability (not in workflow allowlist: ${allowedCapabilities.join(', ') || 'none'})`,
-            detected: output.match(pattern)?.[0] || 'unknown'
-          };
-        }
+  // 🔍 SCAN OUTPUT FOR FORBIDDEN INTENTS
+  for (const { pattern, capability, lang } of forbiddenPatterns) {
+    if (pattern.test(output)) {
+      // ✅ Only block if capability NOT in workflow allowlist
+      const hasCapability = allowedCapabilities.some(c => 
+        c.includes(capability) || 
+        c.includes('transfer') || 
+        c.includes('payment') ||
+        c.includes('financial')
+      );
+      
+      if (!hasCapability) {
+        const match = output.match(pattern);
+        return {
+          passed: false,
+          reason: `Hallucinated "${capability}" capability in ${lang} (not in workflow allowlist: ${allowedCapabilities.join(', ') || 'none'})`,
+          detected: match ? match[0].trim() : 'unknown pattern',
+          language: lang
+        };
       }
     }
-
-    return { passed: true };
   }
 
+  return { passed: true };
+}
   // -----------------------------
   // ✅ CRITICAL FIX: Resolver output unwrapping helper
   // -----------------------------
