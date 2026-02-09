@@ -585,7 +585,7 @@ class RuntimeAPI {
         break;
       }
 
-       case 'action': {
+    case 'action': {
   // 🔒 Interpolate workflow variables first
   let action = this._safeInterpolate(
     step.actionRaw,
@@ -633,15 +633,49 @@ class RuntimeAPI {
   const rawResult = await runResolvers(action);
   const unwrapped = this._unwrapResolverResult(rawResult);
 
-  // 🔒 KERNEL-ENFORCED: Block LLM hallucinations BEFORE saving to context
-  // Detect if this was an LLM resolver by checking action pattern
-  const isLLMAction = action.toLowerCase().includes('groq') || 
-                      action.toLowerCase().includes('openai') ||
-                      action.toLowerCase().includes('anthropic') ||
-                      action.toLowerCase().includes('llm');
+// 🔒 KERNEL-ENFORCED: Block LLM hallucinations BEFORE saving to context
+// Detect LLM resolver by action pattern (comprehensive coverage)
+const isLLMAction = action.toLowerCase().includes('groq') || 
+                    action.toLowerCase().includes('openai') ||
+                    action.toLowerCase().includes('anthropic') ||
+                    action.toLowerCase().includes('claude') ||
+                    action.toLowerCase().includes('gpt') ||
+                    action.toLowerCase().includes('gemini') ||
+                    action.toLowerCase().includes('google') ||
+                    action.toLowerCase().includes('llama') ||
+                    action.toLowerCase().includes('meta') ||
+                    action.toLowerCase().includes('mistral') ||
+                    action.toLowerCase().includes('mixtral') ||
+                    action.toLowerCase().includes('cohere') ||
+                    action.toLowerCase().includes('huggingface') ||
+                    action.toLowerCase().includes('hugging-face') ||
+                    action.toLowerCase().includes('together') ||
+                    action.toLowerCase().includes('perplexity') ||
+                    action.toLowerCase().includes('fireworks') ||
+                    action.toLowerCase().includes('bedrock') ||
+                    action.toLowerCase().includes('azure') ||
+                    action.toLowerCase().includes('ollama') ||
+                    action.toLowerCase().includes('replicate') ||
+                    action.toLowerCase().includes('deepseek') ||
+                    action.toLowerCase().includes('qwen') ||
+                    action.toLowerCase().includes('falcon') ||
+                    action.toLowerCase().includes('phi') ||
+                    action.toLowerCase().includes('gemma') ||
+                    action.toLowerCase().includes('stablelm') ||
+                    action.toLowerCase().includes('yi') ||
+                    action.toLowerCase().includes('dbrx') ||
+                    action.toLowerCase().includes('command') ||
+                    action.toLowerCase().includes('llm');  // Catch-all fallback
   
-  if (isLLMAction && typeof unwrapped?.output === 'string') {
-    const safetyCheck = this._validateLLMOutput(unwrapped.output, action);
+  // Extract actual text from resolver output (your llm-groq returns { response: "...", ... })
+  const llmText = unwrapped?.response ||          // ✅ Primary field for @o-lang/llm-groq
+                  unwrapped?.text || 
+                  unwrapped?.content || 
+                  unwrapped?.answer || 
+                  (typeof unwrapped === 'string' ? unwrapped : null);
+  
+  if (isLLMAction && typeof llmText === 'string') {
+    const safetyCheck = this._validateLLMOutput(llmText, action);
     if (!safetyCheck.passed) {
       throw new Error(
         `[O-Lang SAFETY] LLM hallucinated unauthorized capability:\n` +
