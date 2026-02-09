@@ -1,4 +1,3 @@
-// src/runtime/RuntimeAPI.js
 const fs = require('fs');
 const path = require('path');
 
@@ -333,6 +332,40 @@ class RuntimeAPI {
   }
 
   // -----------------------------
+  // ✅ KERNEL-LEVEL LLM HALLUCINATION PREVENTION (ZERO WORKFLOW CHANGES)
+  // -----------------------------
+  _validateLLMOutput(output, actionContext) {
+    if (!output || typeof output !== 'string') return { passed: true };
+
+    // 🔑 CRITICAL: Extract ONLY allowed capabilities from workflow allowlist
+    const allowedCapabilities = Array.from(this.allowedResolvers)
+      .filter(name => !name.startsWith('llm-') && name !== 'builtInMathResolver')
+      .map(name => name.replace('@o-lang/', '').replace(/-resolver$/, ''));
+
+    // 🔒 Block capability hallucinations (claims to do things outside allowlist)
+    const forbiddenPatterns = [
+      { pattern: /\b(transfer|send|wire|pay|withdraw|deposit)\b/i, capability: 'transfer' },
+      { pattern: /\b(create|open|close|delete)\s+(account|profile)\b/i, capability: 'account_management' },
+      { pattern: /\bI (can|will|am able to)\s+(transfer|pay|send)/i, capability: 'unauthorized_action' }
+    ];
+
+    for (const { pattern, capability } of forbiddenPatterns) {
+      if (pattern.test(output)) {
+        // ✅ Only block if capability NOT in allowlist
+        if (!allowedCapabilities.some(c => c.includes(capability) || c.includes('transfer'))) {
+          return {
+            passed: false,
+            reason: `Hallucinated "${capability}" capability (not in workflow allowlist: ${allowedCapabilities.join(', ') || 'none'})`,
+            detected: output.match(pattern)?.[0] || 'unknown'
+          };
+        }
+      }
+    }
+
+    return { passed: true };
+  }
+
+  // -----------------------------
   // ✅ CRITICAL FIX: Resolver output unwrapping helper
   // -----------------------------
   _unwrapResolverResult(result) {
@@ -538,7 +571,7 @@ class RuntimeAPI {
         }
       });
       if (!hasDocs) {
-        errorMessage += `    → Visit https://www.npmjs.com/search?q=%40o-lang   for resolver packages\n`;  // ✅ FIXED
+        errorMessage += `    → Visit https://www.npmjs.com/search?q=%40o-lang     for resolver packages\n`;  // ✅ FIXED
       }
 
       errorMessage += `\n🛑 Workflow halted to prevent unsafe data propagation to LLMs.`;
@@ -600,6 +633,26 @@ class RuntimeAPI {
   const rawResult = await runResolvers(action);
   const unwrapped = this._unwrapResolverResult(rawResult);
 
+  // 🔒 KERNEL-ENFORCED: Block LLM hallucinations BEFORE saving to context
+  // Detect if this was an LLM resolver by checking action pattern
+  const isLLMAction = action.toLowerCase().includes('groq') || 
+                      action.toLowerCase().includes('openai') ||
+                      action.toLowerCase().includes('anthropic') ||
+                      action.toLowerCase().includes('llm');
+  
+  if (isLLMAction && typeof unwrapped?.output === 'string') {
+    const safetyCheck = this._validateLLMOutput(unwrapped.output, action);
+    if (!safetyCheck.passed) {
+      throw new Error(
+        `[O-Lang SAFETY] LLM hallucinated unauthorized capability:\n` +
+        `  → Detected: "${safetyCheck.detected}"\n` +
+        `  → Reason: ${safetyCheck.reason}\n` +
+        `  → Workflow allowlist: ${Array.from(this.allowedResolvers).join(', ')}\n` +
+        `\n🛑 Halting to prevent deceptive user experience.`
+      );
+    }
+  }
+
   if (step.saveAs) {
     this.context[step.saveAs] = unwrapped;
   }
@@ -626,6 +679,20 @@ class RuntimeAPI {
   // ✅ Ask → Action happens ONLY here (runtime)
   const rawResult = await runResolvers(`Action ${target}`);
   const unwrapped = this._unwrapResolverResult(rawResult);
+
+  // 🔒 KERNEL-ENFORCED: Block LLM hallucinations BEFORE saving to context
+  if (typeof unwrapped?.output === 'string') {
+    const safetyCheck = this._validateLLMOutput(unwrapped.output, target);
+    if (!safetyCheck.passed) {
+      throw new Error(
+        `[O-Lang SAFETY] LLM hallucinated unauthorized capability:\n` +
+        `  → Detected: "${safetyCheck.detected}"\n` +
+        `  → Reason: ${safetyCheck.reason}\n` +
+        `  → Workflow allowlist: ${Array.from(this.allowedResolvers).join(', ')}\n` +
+        `\n🛑 Halting to prevent deceptive user experience.`
+      );
+    }
+  }
 
   if (step.saveAs) this.context[step.saveAs] = unwrapped;
   break;
