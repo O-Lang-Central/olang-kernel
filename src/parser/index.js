@@ -385,18 +385,18 @@ function parseWorkflowLines(lines, filename) {
     }
 
     // Ask (for Notify/resolver calls) - ✅ PRESERVE TARGET EXACTLY (NO NORMALIZATION)
-    const askMatch = line.match(/^Ask\s+(.+)$/i);
-    if (askMatch) {
-      flushCurrentStep();
-      workflow.steps.push({
-        type: 'ask',
-        target: askMatch[1].trim(),  // ← PRESERVED EXACTLY (no normalizeAction)
-        stepNumber: workflow.steps.length + 1,
-        saveAs: null,
-        constraints: {}
-      });
-      continue;
-    }
+const askMatch = line.match(/^Ask\s+(.+)$/i);
+if (askMatch) {
+  flushCurrentStep();
+  workflow.steps.push({
+    type: 'action',
+    actionRaw: `Action ${askMatch[1].trim()}`,
+    stepNumber: workflow.steps.length + 1,
+    saveAs: null,
+    constraints: {}
+  });
+  continue;
+}
 
     // Return
     const returnMatch = line.match(/^Return\s+(.+)$/i);
@@ -530,30 +530,33 @@ function parseBlock(lines) {
     }
 
     // Use in block - ✅ PRESERVE TOOL EXACTLY (NO NORMALIZATION)
-    const useMatch = line.match(/^Use\s+(.+)$/i);
-    if (useMatch) {
-      flush();
-      steps.push({ 
-        type: 'use', 
-        tool: useMatch[1].trim(),  // ← PRESERVED EXACTLY
-        saveAs: null, 
-        constraints: {} 
-      });
-      continue;
-    }
+const useMatch = line.match(/^Use\s+(.+)$/i);
+if (useMatch) {
+  flushCurrentStep();
+  workflow.steps.push({
+    type: 'action',
+    actionRaw: `Action ${useMatch[1].trim()}`,
+    stepNumber: workflow.steps.length + 1,
+    saveAs: null,
+    constraints: {}
+  });
+  continue;
+}
 
-    // Ask in block - ✅ PRESERVE TARGET EXACTLY (NO NORMALIZATION)
-    const askMatch = line.match(/^Ask\s+(.+)$/i);
-    if (askMatch) {
-      flush();
-      steps.push({ 
-        type: 'ask', 
-        target: askMatch[1].trim(),  // ← PRESERVED EXACTLY
-        saveAs: null, 
-        constraints: {} 
-      });
-      continue;
-    }
+
+   // Ask in block — CANONICALIZE AT PARSE TIME
+const askMatch = line.match(/^Ask\s+(.+)$/i);
+if (askMatch) {
+  flush();
+  steps.push({
+    type: 'action',
+    actionRaw: `Action ${askMatch[1].trim()}`,
+    saveAs: null,
+    constraints: {}
+  });
+  continue;
+}
+
 
     // Constraint inside block
     const constraintMatch = line.match(/^Constraint:\s*(.+)$/i);

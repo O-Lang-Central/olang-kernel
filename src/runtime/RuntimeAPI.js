@@ -552,7 +552,7 @@ class RuntimeAPI {
         break;
       }
 
-     case 'action': {
+       case 'action': {
   // 🔒 Interpolate workflow variables first
   let action = this._safeInterpolate(
     step.actionRaw,
@@ -605,7 +605,6 @@ class RuntimeAPI {
   }
   break;
 }
-
 
       case 'use': {
         // ✅ SAFE INTERPOLATION for tool name
