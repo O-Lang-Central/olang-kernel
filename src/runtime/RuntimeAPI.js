@@ -616,20 +616,20 @@ class RuntimeAPI {
         break;
       }
 
-      case 'ask': {
-        const target = this._safeInterpolate(step.target, this.context, 'LLM prompt');
-        
-        // ✅ ADD THIS CHECK
-        if (/{[^}]+}/.test(target)) {
-          throw new Error(`[O-Lang] Unresolved variables in prompt: "${target}"`);
-        }
-        
-        const rawResult = await runResolvers(`Ask ${target}`);
-        const unwrapped = this._unwrapResolverResult(rawResult);
-        
-        if (step.saveAs) this.context[step.saveAs] = unwrapped;
-        break;
-      }
+     case 'ask': {
+  const target = this._safeInterpolate(step.target, this.context, 'LLM prompt');
+
+  if (/{[^}]+}/.test(target)) {
+    throw new Error(`[O-Lang] Unresolved variables in prompt: "${target}"`);
+  }
+
+  // ✅ Ask → Action happens ONLY here (runtime)
+  const rawResult = await runResolvers(`Action ${target}`);
+  const unwrapped = this._unwrapResolverResult(rawResult);
+
+  if (step.saveAs) this.context[step.saveAs] = unwrapped;
+  break;
+}
 
       case 'evolve': {
         const { targetResolver, feedback } = step;
