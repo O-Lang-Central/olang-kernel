@@ -480,7 +480,6 @@ _validateLLMOutput(output, actionContext) {
 
   return { passed: true };
 }
-}
   // -----------------------------
   // ✅ CRITICAL FIX: Resolver output unwrapping helper
   // -----------------------------
