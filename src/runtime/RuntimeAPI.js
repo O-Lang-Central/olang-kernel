@@ -332,7 +332,7 @@ class RuntimeAPI {
   }
 
 // -----------------------------
-// ✅ KERNEL-LEVEL LLM HALLUCINATION PREVENTION (PAN-AFRICAN SEMANTIC SAFETY)
+// ✅ KERNEL-LEVEL LLM HALLUCINATION PREVENTION (CONJUGATION-AWARE SEMANTIC SAFETY)
 // -----------------------------
 _validateLLMOutput(output, actionContext) {
   if (!output || typeof output !== 'string') return { passed: true };
@@ -342,94 +342,106 @@ _validateLLMOutput(output, actionContext) {
     .filter(name => !name.startsWith('llm-') && name !== 'builtInMathResolver')
     .map(name => name.replace('@o-lang/', '').replace(/-resolver$/, ''));
 
-  // 🔒 PAN-AFRICAN + GLOBAL INTENT DETECTION (Deterministic, No LLM Required)
+  // 🔒 CONJUGATION-AWARE PAN-AFRICAN INTENT DETECTION
   const forbiddenPatterns = [
     // ────────────────────────────────────────────────
-    // 🇳🇬 NIGERIAN LANGUAGES (Priority)
+    // 🇳🇬 NIGERIAN LANGUAGES (Conjugation-aware)
     // ────────────────────────────────────────────────
     
-    // Yoruba (yo)
+    // Yoruba (yo) - Perfective aspect "ti" (has done) + Progressive "ń/ǹ/n"
+    { pattern: /\bti\s+(?:fi|san|gba|da|lo)\b/i, capability: 'unauthorized_action', lang: 'yo' }, // "has transferred/paid/withdrawn"
+    { pattern: /\b(?:ń|ǹ|n)\s+(?:fi|san|gba)\b/i, capability: 'unauthorized_action', lang: 'yo' }, // Progressive "is transferring/paying"
     { pattern: /\b(fi\s+(?:owo|ẹ̀wọ̀|ewo|ku|fun|s'ọkọọ))\b/i, capability: 'transfer', lang: 'yo' },
     { pattern: /\b(san\s+(?:owo|ẹ̀wọ̀|ewo|fun|wo))\b/i, capability: 'payment', lang: 'yo' },
     { pattern: /\b(gba\s+owo)\b/i, capability: 'withdrawal', lang: 'yo' },
     { pattern: /\b(mo\s+ti\s+(?:fi|san|gba))\b/i, capability: 'unauthorized_action', lang: 'yo' },
     
-    // Hausa (ha)
+    // Hausa (ha) - Perfective aspect "ya/ta/su" (he/she/they did) + Future "za a/za ta"
+    { pattern: /\b(?:ya|ta|su)\s+(?:ciyar|biya|sahawa|sake)\b/i, capability: 'unauthorized_action', lang: 'ha' }, // "he/she/they transferred/paid/withdrew/deposited"
+    { pattern: /\b(?:za\sa|za\s+ta)\s+(?:ciyar|biya)\b/i, capability: 'unauthorized_action', lang: 'ha' }, // Future "will transfer/pay"
     { pattern: /\b(ciyar\s*(?:da)?|ciya\s*(?:da)?|shiga\s+kuɗi)\b/i, capability: 'transfer', lang: 'ha' },
     { pattern: /\b(biya\s*(?:da)?)\b/i, capability: 'payment', lang: 'ha' },
     { pattern: /\b(sahaw[ae]\s+kuɗi)\b/i, capability: 'withdrawal', lang: 'ha' },
     { pattern: /\b(ina\s+(?:ciyar|biya|sahawa))\b/i, capability: 'unauthorized_action', lang: 'ha' },
     
-    // Igbo (ig)
+    // Igbo (ig) - Perfective aspect (verb + "riri/ere")
+    { pattern: /\b(?:ziri|bururu|tinyere|gbara)\b/i, capability: 'unauthorized_action', lang: 'ig' }, // "has sent/carried/deposited/withdrawn"
     { pattern: /\b(zipu\s+(?:ego|moni|isi|na))\b/i, capability: 'transfer', lang: 'ig' },
     { pattern: /\b(buru\s+(?:ego|moni|isi))\b/i, capability: 'transfer', lang: 'ig' },
     { pattern: /\b(tinye\s+(?:ego|moni|isi))\b/i, capability: 'deposit', lang: 'ig' },
     { pattern: /\b(m\s+(?:ziri|buru|zipuru|tinyere))\b/i, capability: 'unauthorized_action', lang: 'ig' },
     
     // ────────────────────────────────────────────────
-    // 🌍 PAN-AFRICAN LANGUAGES
+    // 🌍 PAN-AFRICAN LANGUAGES (Conjugation-aware)
     // ────────────────────────────────────────────────
     
-    // Swahili (sw) - 200M+ speakers
+    // Swahili (sw) - Perfect tense (subject prefix + "me" + verb) + Passive perfect
+    { pattern: /\b(?:ni|u|a|tu|m|wa|ki|vi|zi|i)\s*me\s*(?:ongeza|weka|tuma|peleka|lipa)\b/i, capability: 'unauthorized_action', lang: 'sw' }, // "I/you/he has added/put/sent/paid"
+    { pattern: /\b(?:kime|lime|ime|ume|nime|vime|zyme|yame|mame)(?:ongezwa|wekwa|fanyika)\b/i, capability: 'unauthorized_action', lang: 'sw' }, // Passive perfect "has been added/put/done"
     { pattern: /\b(tuma\s+(?:pesa|fedha)|pelek[ae]?\s+(?:pesa|fedha))\b/i, capability: 'transfer', lang: 'sw' },
     { pattern: /\b(lipa|maliza\s+malipo)\b/i, capability: 'payment', lang: 'sw' },
     { pattern: /\b(ongez[ae]?\s*(?:kiasi|pesa|fedha)|wek[ae]?\s+(?:katika|ndani)\s+(?:akaunti|hisa))\b/i, capability: 'deposit', lang: 'sw' },
     { pattern: /\b(nime(?:tuma|lipa|ongeza|weka|peleka))\b/i, capability: 'unauthorized_action', lang: 'sw' },
     
-    // Amharic (am) - Ethiopia (Ethiopic script U+1200-U+137F)
-    { pattern: /[\u1200-\u137F]{0,4}(?:ተላላፈ|ላክ|ክፈል|ጨምር|ወጣ|ገባ)[\u1200-\u137F]{0,4}/u, capability: 'financial_action', lang: 'am' },
+    // Amharic (am) - Perfective suffix "-e" / "-u" (Ethiopic script U+1200-U+137F)
+    { pattern: /[\u1200-\u137F]{0,4}(?:ተላላፈ|ላክ|ክፈል|ጨምር|ወጣ|ገባ)[\u1200-\u137F]{0,2}(?:\u1205|\u122d|\u1265)[\u1200-\u137F]{0,2}/u, capability: 'financial_action', lang: 'am' }, // Verb + perfective marker
     
-    // Oromo (om)
+    // Oromo (om) - Perfective "ni...e" construction
+    { pattern: /\bni\s+(?:kuufe|dhiibe|kennine|gurgure)\b/i, capability: 'unauthorized_action', lang: 'om' },
     { pattern: /\b(kuuf\s+(?:qilleensaa|bilbila)|dhiib\s+(?:qilleensaa|bilbila))\b/i, capability: 'transfer', lang: 'om' },
     { pattern: /\b(kenn\s*i|gurgur\s*i)\b/i, capability: 'payment', lang: 'om' },
-    { pattern: /\b(ni\s+(?:kuufe|dhiibe|kennine|gurgure))\b/i, capability: 'unauthorized_action', lang: 'om' },
     
     // Fula (ff)
     { pattern: /\b(sakkit\s+(?:ndo|ndoo)|tawt\s+(?:ndo|ndoo))\b/i, capability: 'transfer', lang: 'ff' },
     { pattern: /\b(jokk\s*i|soodug\s*i)\b/i, capability: 'payment', lang: 'ff' },
     
-    // Somali (so)
+    // Somali (so) - Perfective "waxaa" + past participle
+    { pattern: /\bwaxaa\s+(?:diray|bixiyay|ku\s+daray|sameeyay)\b/i, capability: 'unauthorized_action', lang: 'so' },
     { pattern: /\b(dir\s+(?:lacag|maal|qarsoon))\b/i, capability: 'transfer', lang: 'so' },
     { pattern: /\b(bixi|bixis\s*o)\b/i, capability: 'payment', lang: 'so' },
-    { pattern: /\b(waxaa\s+(?:diray|bixiyay|ku\s+daray))\b/i, capability: 'unauthorized_action', lang: 'so' },
     
-    // Zulu (zu)
+    // Zulu (zu) - Perfective suffix "-ile" / "-e"
+    { pattern: /\b(?:thumel|hlawul|fik)\s*ile\b/i, capability: 'unauthorized_action', lang: 'zu' },
     { pattern: /\b(thumel\s*a\s+(?:imali|imali))\b/i, capability: 'transfer', lang: 'zu' },
     { pattern: /\b(hlawul\s*a|hlawulel\s*a)\b/i, capability: 'payment', lang: 'zu' },
     { pattern: /\b(siyithumel\s*e|siyihlawul\s*e)\b/i, capability: 'unauthorized_action', lang: 'zu' },
     
-    // Shona (sn)
+    // Shona (sn) - Perfective suffix "-a" / "-e"
+    { pattern: /\b(?:tumir|bhadhar)\s*a\b/i, capability: 'unauthorized_action', lang: 'sn' },
     { pattern: /\b(tumir\s*a\s+(?:mhando|ari))\b/i, capability: 'transfer', lang: 'sn' },
     { pattern: /\b(bhadhara|bhadharis\s*o)\b/i, capability: 'payment', lang: 'sn' },
     
     // ────────────────────────────────────────────────
-    // 🌐 GLOBAL LANGUAGES
+    // 🌐 GLOBAL LANGUAGES (Conjugation-aware)
     // ────────────────────────────────────────────────
     
-    // English (en)
+    // English (en) - Perfective "have/has/had + past participle" + Passive "was/were"
+    { pattern: /\b(?:have|has|had)\s+(?:transferred|sent|paid|withdrawn|deposited|wire[d])\b/i, capability: 'unauthorized_action', lang: 'en' },
+    { pattern: /\b(?:was|were|been)\s+(?:added|credited|transferred|sent|paid)\b/i, capability: 'unauthorized_action', lang: 'en' },
     { pattern: /\b(transfer(?:red|ring)?|send(?:t|ing)?|wire(?:d)?|pay(?:ed|ing)?|withdraw(?:n)?|deposit(?:ed|ing)?|disburse(?:d)?)\b/i, capability: 'financial_action', lang: 'en' },
     { pattern: /\bI\s+(?:can|will|am able to|have|'ve|did|already)\s+(?:transfer|send|pay|withdraw|deposit|wire)\b/i, capability: 'unauthorized_action', lang: 'en' },
     
-    // French (fr)
+    // French (fr) - Past participle "a/ont + verbé"
+    { pattern: /\b(?:j'?ai|tu as|il a|elle a|nous avons|vous avez|ils ont|elles ont)\s+(?:viré|transféré|envoyé|payé|retiré|déposé)\b/i, capability: 'unauthorized_action', lang: 'fr' },
     { pattern: /\b(virer|transférer|envoyer|payer|retirer|déposer|débiter|créditer)\b/i, capability: 'financial_action', lang: 'fr' },
-    { pattern: /\b(j'?ai\s+(?:viré|transféré|envoyé|payé|retiré|déposé))\b/i, capability: 'unauthorized_action', lang: 'fr' },
     
-    // Arabic (ar) - Unicode Arabic block U+0600-U+06FF
-    { pattern: /[\u0600-\u06FF]{0,3}(?:حوّل|حول|أرسل|ارسل|ادفع|اودع|سحب|استخرج|حوالة|إيداع|سحب)[\u0600-\u06FF]{0,3}/u, capability: 'financial_action', lang: 'ar' },
+    // Arabic (ar) - Perfective past tense (fa'ala form) + subject markers
+    { pattern: /[\u0600-\u06FF]{0,3}(?:حوّل|أرسل|ادفع|اودع|سحب)[\u0600-\u06FF]{0,3}(?:ت|نا|تم|تا|تِ|تُ|تَ)[\u0600-\u06FF]{0,3}/u, capability: 'financial_action', lang: 'ar' },
     { pattern: /[\u0600-\u06FF]{0,3}(?:أنا|تم|لقد)\s*(?:حوّلت|أرسلت|دفعت|اودعت)[\u0600-\u06FF]{0,3}/u, capability: 'unauthorized_action', lang: 'ar' },
     
-    // Chinese (zh) - Han script U+4E00-U+9FFF
+    // Chinese (zh) - Perfective "le" particle
+    { pattern: /[\u4e00-\u9fff]{0,2}(?:转账|支付|存款|取款)[\u4e00-\u9fff]{0,2}(?:了)[\u4e00-\u9fff]{0,2}/u, capability: 'financial_action', lang: 'zh' },
     { pattern: /[\u4e00-\u9fff]{0,2}(?:转账|转帐|支付|付款|提款|取款|存款|存入|汇款|存)[\u4e00-\u9fff]{0,2}/u, capability: 'financial_action', lang: 'zh' },
     { pattern: /[\u4e00-\u9fff]{0,2}(?:我|已|已经)\s*(?:转账|支付|提款|存款)[\u4e00-\u9fff]{0,2}/u, capability: 'unauthorized_action', lang: 'zh' },
     
     // ────────────────────────────────────────────────
-    // 🛡️ LANGUAGE-AGNOSTIC NUMERIC DECEPTION (Critical!)
+    // 🛡️ LANGUAGE-AGNOSTIC NUMERIC DECEPTION (Conjugation-agnostic)
     // ────────────────────────────────────────────────
     
-    // Universal number formats: 1,000 | 1 000 | 1.000 | 1000 | 10,000.50 | 10.000,50
+    // Universal number formats + action verbs (catches all conjugations via verb roots)
     { 
       pattern: 
-        /(?:^|\s|[:\(\[—–\-])(?:\d{1,3}(?:[,\s.]\d{3})*(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)(?:\s*(?:naira|ngn|₦|\$|usd|dollars?|euros?|€|pounds?|£|kes|tzs|ugx|rwf|cdf|xof|xaf|ghs|zar|cfa|francs?|rand|shillings?|birr|naira|kobo|pesa|fedha|maal|qarsoon|lacag|imali|mhando|ari|kuɗi|owo|ego|moni|isi))?\s*(?:was\s+(?:added|credited|deposited|transferred|sent|wire[d]?|paid|moved)|has\s+been\s+(?:added|credited|deposited|transferred|sent|paid|moved)|will\s+be\s+(?:added|credited|deposited|transferred|sent|paid|moved)|get\s+(?:added|credited|deposited)|na\s+(?:sake|saki|ce|ceba)|ni\s+(?:sake|saki)|an\s+(?:sake|saki|ce|ceba)|ongezwa|wekwa|wekewa|saki|sake|ti\s+wa\s+kun|fi\s+si|zipu|buru|tinye|gba|san|fi\s+owo|ciyar|biya|nime(?:tuma|lipa|ongeza|weka|peleka)|ni(?:kuufe|dhiibe|kennine|gurgure)|waxaa\s+(?:diray|bixiyay|ku\s+daray)|siyi(?:thumelwe|hlawulwe)|tumirirwa|bhadharirwa|ime(?:thibitishwa|fanikiwa|kamilika)|مضاف|محول|مدفوع|مودع|تم|أضيف|حوّل|أرسل|ادفع|اودع|سحب|تمت|الإيداع|السحب|转账|支付|存入|已转账|已支付|已存入|汇款|存|取款)\b/i,
+        /(?:^|\s|[:\(\[—–\-])(?:\d{1,3}(?:[,\s.]\d{3})*(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)(?:\s*(?:naira|ngn|₦|\$|usd|dollars?|euros?|€|pounds?|£|kes|tzs|ugx|rwf|cdf|xof|xaf|ghs|zar|cfa|francs?|rand|shillings?|birr|naira|kobo|pesa|fedha|maal|qarsoon|lacag|imali|mhando|ari|kuɗi|owo|ego|moni|isi))?\s*(?:added|credited|deposited|transferred|sent|wire[d]?|paid|moved|ongezwa|wekwa|saki|ceba|fi\s+si|zipu|buru|tinye|gba|san|ciyar|biya|tuma|peleka|lipa|viré|transféré|envoyé|payé|retiré|déposé|حوّل|أرسل|ادفع|اودع|سحب|转账|支付|存款|取款)\b/i,
       capability: 'unauthorized_action',
       lang: 'multi'
     },
@@ -438,8 +450,8 @@ _validateLLMOutput(output, actionContext) {
     // 🔒 PII LEAKAGE PATTERNS
     // ────────────────────────────────────────────────
     
-    // Account numbers (6+ digits)
-    { pattern: /\b(?:account|acct|a\/c|akaunti|asusu|akwụkwọ\s+ọkụ|hesabu|#)\s*[:\-—–]?\s*(\d{6,})\b/i, capability: 'pii_exposure', lang: 'multi' },
+    // Account numbers (6+ digits after context words)
+    { pattern: /\b(?:account|acct|a\/c|akaunti|asusu|akwụkwọ\s+ọkụ|hesabu|namba|#)\s*[:\-—–]?\s*(\d{6,})\b/i, capability: 'pii_exposure', lang: 'multi' },
     
     // Nigerian BVN (11 digits)
     { pattern: /\b(?:bvn|bank verification number)\s*[:\-]?\s*(\d{11})\b/i, capability: 'pii_exposure', lang: 'multi' },
@@ -448,11 +460,10 @@ _validateLLMOutput(output, actionContext) {
     { pattern: /\b(?:\+?234\s*|0)(?:70|80|81|90|91)\d{8}\b/, capability: 'pii_exposure', lang: 'multi' },
     
     // ────────────────────────────────────────────────
-    // ✅ FAKE CONFIRMATION PATTERNS
+    // ✅ FAKE CONFIRMATION PATTERNS (All tenses/aspects)
     // ────────────────────────────────────────────────
     
-    // Success/confirmation in multiple languages
-    { pattern: /\b(successful(?:ly)?|confirmed|approved|completed|processed|accepted|verified|imethibitishwa|imefanikiwa|amthibitishwa|ti\s+da|ti\s+ṣe|gụnyere)\b/i, capability: 'deceptive_claim', lang: 'multi' }
+    { pattern: /\b(successful(?:ly)?|confirmed|approved|completed|processed|accepted|verified|imethibitishwa|imefanikiwa|amthibitishwa|ti\s+da|ti\s+ṣe|gụnyere|kimefanyika|yamekamilika)\b/i, capability: 'deceptive_claim', lang: 'multi' }
   ];
 
   // 🔍 SCAN OUTPUT FOR FORBIDDEN INTENTS
@@ -463,7 +474,9 @@ _validateLLMOutput(output, actionContext) {
         c.includes(capability) || 
         c.includes('transfer') || 
         c.includes('payment') ||
-        c.includes('financial')
+        c.includes('financial') ||
+        c.includes('deposit') ||
+        c.includes('withdraw')
       );
       
       if (!hasCapability) {
