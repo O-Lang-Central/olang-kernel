@@ -467,7 +467,7 @@ _validateLLMOutput(output, actionContext) {
     { pattern: /\b(successful(?:ly)?|confirmed|approved|completed|processed|accepted|verified|imethibitishwa|imefanikiwa|amthibitishwa|ti\s+da|ti\s+ṣe|gụnyere|kimefanyika|yamekamilika)\b/i, capability: 'deceptive_claim', lang: 'multi' }
   ];
 
-  // 🔍 SCAN OUTPUT FOR FORBIDDEN INTENTS
+  // 🔍 SCAN OUTPUT FOR FORBIDDEN INTENTS (financial/PII/fake confirmations)
   for (const { pattern, capability, lang } of forbiddenPatterns) {
     if (pattern.test(output)) {
       // ✅ Only block if capability NOT in workflow allowlist
@@ -488,6 +488,40 @@ _validateLLMOutput(output, actionContext) {
           detected: match ? match[0].trim() : 'unknown pattern',
           language: lang
         };
+      }
+    }
+  }
+
+  // ✅ NEW: SEMANTIC INTENT DRIFT DETECTION (BACKWARD-COMPATIBLE)
+  const intent = this.context.__verified_intent;
+  if (intent) {
+    // Check prohibited topics
+    if (intent.prohibited_topics && Array.isArray(intent.prohibited_topics)) {
+      const lower = output.toLowerCase();
+      for (const topic of intent.prohibited_topics) {
+        if (lower.includes(topic.toLowerCase())) {
+          return {
+            passed: false,
+            reason: `Resolver output violates prohibited topic "${topic}" defined in __verified_intent`,
+            detected: topic,
+            language: 'multi'
+          };
+        }
+      }
+    }
+
+    // Check prohibited actions
+    if (intent.prohibited_actions && Array.isArray(intent.prohibited_actions)) {
+      const lower = output.toLowerCase();
+      for (const action of intent.prohibited_actions) {
+        if (lower.includes(action.toLowerCase())) {
+          return {
+            passed: false,
+            reason: `Resolver output violates prohibited action "${action}" defined in __verified_intent`,
+            detected: action,
+            language: 'multi'
+          };
+        }
       }
     }
   }
@@ -1170,7 +1204,17 @@ const isLLMAction = action.toLowerCase().includes('groq') ||
       ...inputs, 
       workflow_name: workflow.name 
     };
-    
+
+     // Optional strict mode: enforce resolver-originated inputs
+  if (process.env.OLANG_STRICT_INPUTS === 'true') {
+    if (!inputs.__resolver_origin) {
+      throw new Error(
+        '[O-Lang SAFETY] Inputs must originate from a certified resolver. ' +
+        'Use @o-lang/input-validator to validate external data.'
+      );
+    }
+  }
+   
     const currentGeneration = inputs.__generation || 1;
     if (workflow.maxGenerations !== null && currentGeneration > workflow.maxGenerations) {
       throw new Error(`Workflow generation ${currentGeneration} exceeds Constraint: max_generations = ${workflow.maxGenerations}`);
