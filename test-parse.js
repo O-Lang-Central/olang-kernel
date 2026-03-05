@@ -1,24 +1,38 @@
-const { parse } = require('./src/parser/index.js');
+// test-governance.js
+const { RuntimeAPI } = require('./src/runtime/RuntimeAPI');
 
-// Sample workflow with simple step
-const workflowText = `
-Workflow "Secure Bank Assistant" with user_question, customer_id
+const workflow = {
+  type: 'workflow',
+  name: 'icu-bed-allocation',
+  version: '1.0.0',
+  allowedResolvers: ['@o-lang/llm-groq'],
+  maxGenerations: 3,
+  steps: [],
+  returnValues: ['bed_id']
+};
 
-Allow resolvers:
-- llm-groq
-- bank-account-lookup
+const rt = new RuntimeAPI({ verbose: true });
 
-Step 1: bank-account-lookup {customer_id}
-Save as account_info
+// Test 1: Governance hash
+const govHash = rt._generateGovernanceProfileHash(workflow);
+console.log('✅ Governance Hash:', govHash.substring(0, 16) + '...');
 
-Step 2: llm-groq "Answer this customer question: '{user_question}'. The customer's current balance is {account_info.balance}. NEVER mention account numbers, routing numbers, or transfer capabilities. Keep the response under 2 sentences."
-Save as response
+// Test 2: Runtime metadata
+const meta = rt.getRuntimeMetadata();
+console.log('✅ Kernel Version:', meta.version);
 
-Return response
-`;
+// Test 3: Audit entry structure
+rt._createAuditEntry('test', {
+  workflow_id: 'icu-bed-allocation@1.0.0',
+  kernel_version: meta.version,
+  governance_profile_hash: govHash
+});
 
-// Parse it
-const workflow = parse(workflowText);
+const entry = rt.auditLog[0].details;
+console.log('✅ All 3 governance fields present:', 
+  entry.workflow_id && entry.kernel_version && entry.governance_profile_hash
+);
 
-// Inspect output
-console.log(JSON.stringify(workflow, null, 2));
+// Test 4: Export with Merkle root
+const exported = rt.exportAuditLog();
+console.log('✅ Merkle root:', exported.merkleRoot ? 'Present ✓' : 'Missing ✗');

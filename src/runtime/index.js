@@ -2,4 +2,4 @@
 const { RuntimeAPI, execute } = require('./RuntimeAPI');
 const { parse} = require('../parser');
 
-module.exports = { execute, RuntimeAPI, parse };
+module.exports = { execute, parse };
