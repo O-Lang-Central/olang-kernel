@@ -721,12 +721,50 @@ class RuntimeAPI {
     });
   }
 
-  // -----------------------------
+// -----------------------------
   // ✅ KERNEL-LEVEL LLM HALLUCINATION PREVENTION (CONJUGATION-AWARE + EVASION-RESISTANT)
   // -----------------------------
   _validateLLMOutput(output, actionContext) {
     if (!output || typeof output !== 'string') return { passed: true };
-    
+
+    // ── __verified_intent takes priority ──────────────────────────────────────
+    // If the workflow author has defined intent rules, use those exclusively.
+    // This makes governance dynamic — skip hardcoded patterns entirely.
+    const intent = this.context.__verified_intent;
+    if (intent) {
+      if (intent.prohibited_actions && Array.isArray(intent.prohibited_actions)) {
+        const lower = output.toLowerCase();
+        for (const action of intent.prohibited_actions) {
+          if (lower.includes(action.toLowerCase())) {
+            return {
+              passed: false,
+              reason: `Output violates prohibited action "${action}" defined in __verified_intent`,
+              detected: action,
+              language: 'multi'
+            };
+          }
+        }
+      }
+
+      if (intent.prohibited_topics && Array.isArray(intent.prohibited_topics)) {
+        const lower = output.toLowerCase();
+        for (const topic of intent.prohibited_topics) {
+          if (lower.includes(topic.toLowerCase())) {
+            return {
+              passed: false,
+              reason: `Output violates prohibited topic "${topic}" defined in __verified_intent`,
+              detected: topic,
+              language: 'multi'
+            };
+          }
+        }
+      }
+
+      // __verified_intent present and passed — skip hardcoded patterns
+      return { passed: true };
+    }
+
+    // ── No __verified_intent — fall through to hardcoded patterns ─────────────
     // 🔑 Extract allowed capabilities from workflow allowlist
     const allowedCapabilities = Array.from(this.allowedResolvers)
       .filter(name => !name.startsWith('llm-') && name !== 'builtInMathResolver')
@@ -737,33 +775,23 @@ class RuntimeAPI {
       // ────────────────────────────────────────────────
       // 🇳🇬 NIGERIAN LANGUAGES (Conjugation-aware)
       // ────────────────────────────────────────────────
-      // Yoruba (yo) - Perfective "ti" + Progressive "ń/ǹ/n"
       { pattern: /\bti\s+(?:fi|san|gba|da|lo)\b/i, capability: 'unauthorized_action', lang: 'yo' },
       { pattern: /\b(?:ń|ǹ|n)\s+(?:fi|san|gba)\b/i, capability: 'unauthorized_action', lang: 'yo' },
       { pattern: /\b(fi\s+(?:owo|ẹ̀wọ̀|ewo|ku|fun|s'ọkọọ))\b/i, capability: 'transfer', lang: 'yo' },
       { pattern: /\b(san\s+(?:owo|ẹ̀wọ̀|ewo|fun|wo))\b/i, capability: 'payment', lang: 'yo' },
       { pattern: /\b(gba\s+owo)\b/i, capability: 'withdrawal', lang: 'yo' },
       { pattern: /\b(mo\s+ti\s+(?:fi|san|gba))\b/i, capability: 'unauthorized_action', lang: 'yo' },
-      
-      // Hausa (ha) - Perfective "ya/ta/su" + Future "za a/za ta"
       { pattern: /\b(?:ya|ta|su)\s+(?:ciyar|biya|sahawa|sake)\b/i, capability: 'unauthorized_action', lang: 'ha' },
       { pattern: /\b(?:za\sa|za\s+ta)\s+(?:ciyar|biya)\b/i, capability: 'unauthorized_action', lang: 'ha' },
       { pattern: /\b(ciyar\s*(?:da)?|ciya\s*(?:da)?|shiga\s+kuɗi)\b/i, capability: 'transfer', lang: 'ha' },
       { pattern: /\b(biya\s*(?:da)?)\b/i, capability: 'payment', lang: 'ha' },
       { pattern: /\b(sahaw[ae]\s+kuɗi)\b/i, capability: 'withdrawal', lang: 'ha' },
       { pattern: /\b(ina\s+(?:ciyar|biya|sahawa))\b/i, capability: 'unauthorized_action', lang: 'ha' },
-      
-      // Igbo (ig) - Perfective suffixes
       { pattern: /\b(?:ziri|bururu|tinyere|gbara)\b/i, capability: 'unauthorized_action', lang: 'ig' },
       { pattern: /\b(zipu\s+(?:ego|moni|isi|na))\b/i, capability: 'transfer', lang: 'ig' },
       { pattern: /\b(buru\s+(?:ego|moni|isi))\b/i, capability: 'transfer', lang: 'ig' },
       { pattern: /\b(tinye\s+(?:ego|moni|isi))\b/i, capability: 'deposit', lang: 'ig' },
       { pattern: /\b(m\s+(?:ziri|buru|zipuru|tinyere))\b/i, capability: 'unauthorized_action', lang: 'ig' },
-      
-      // ────────────────────────────────────────────────
-      // 🌍 PAN-AFRICAN LANGUAGES (Conjugation-aware + Evasion-resistant)
-      // ────────────────────────────────────────────────
-      // Swahili (sw) - ALL ASPECTS: Perfect, Continuous Passive, Future
       { pattern: /\b(?:ni|u|a|tu|m|wa|ki|vi|zi|i)\s*me\s*(?:ongeza|weka|tuma|peleka|lipa|wasilisha)\b/i, capability: 'unauthorized_action', lang: 'sw' },
       { pattern: /\b(?:kime|lime|ime|ume|nime|vime|zyme|yame|mame)(?:ongezwa|wekwa|tumwa|pelekwa|lipwa|wasilishwa|fanyika)\b/i, capability: 'unauthorized_action', lang: 'sw' },
       { pattern: /\b(?:ki|vi|mi|ma|u|wa|i|zi|ya|li|tu|mu|a|pa|ku)na(?:cho|vyo|yo|lo|mo|o)?(?:tum|pelek|wasil|ongez|wek|lip)\w*wa\b/i, capability: 'unauthorized_action', lang: 'sw' },
@@ -772,77 +800,44 @@ class RuntimeAPI {
       { pattern: /\b(lipa|maliza\s+malipo)\b/i, capability: 'payment', lang: 'sw' },
       { pattern: /\b(ongez[ae]?\s*(?:kiasi|pesa|fedha)|wek[ae]?\s+(?:katika|ndani)\s+(?:akaunti|hisa))\b/i, capability: 'deposit', lang: 'sw' },
       { pattern: /\b(nime(?:tuma|lipa|ongeza|weka|peleka))\b/i, capability: 'unauthorized_action', lang: 'sw' },
-      
-      // Amharic (am) - Perfective suffix (Ethiopic script)
       { pattern: /[\u1200-\u137F]{0,4}(?:ተላላፈ|ላክ|ክፈል|ጨምር|ወጣ|ገባ)[\u1200-\u137F]{0,2}(?:\u1205|\u122d|\u1265)[\u1200-\u137F]{0,2}/u, capability: 'financial_action', lang: 'am' },
-      
-      // Oromo (om) - Perfective "ni...e"
       { pattern: /\bni\s+(?:kuufe|dhiibe|kennine|gurgure)\b/i, capability: 'unauthorized_action', lang: 'om' },
       { pattern: /\b(kuuf\s+(?:qilleensaa|bilbila)|dhiib\s+(?:qilleensaa|bilbila))\b/i, capability: 'transfer', lang: 'om' },
       { pattern: /\b(kenn\s*i|gurgur\s*i)\b/i, capability: 'payment', lang: 'om' },
-      
-      // Fula (ff)
       { pattern: /\b(sakkit\s+(?:ndo|ndoo)|tawt\s+(?:ndo|ndoo))\b/i, capability: 'transfer', lang: 'ff' },
       { pattern: /\b(jokk\s*i|soodug\s*i)\b/i, capability: 'payment', lang: 'ff' },
-      
-      // Somali (so) - Perfective "waxaa"
       { pattern: /\bwaxaa\s+(?:diray|bixiyay|ku\s+daray|sameeyay)\b/i, capability: 'unauthorized_action', lang: 'so' },
       { pattern: /\b(dir\s+(?:lacag|maal|qarsoon))\b/i, capability: 'transfer', lang: 'so' },
       { pattern: /\b(bixi|bixis\s*o)\b/i, capability: 'payment', lang: 'so' },
-      
-      // Zulu (zu) - Perfective "-ile"
       { pattern: /\b(?:thumel|hlawul|fik)\s*ile\b/i, capability: 'unauthorized_action', lang: 'zu' },
       { pattern: /\b(thumel\s*a\s+(?:imali|imali))\b/i, capability: 'transfer', lang: 'zu' },
       { pattern: /\b(hlawul\s*a|hlawulel\s*a)\b/i, capability: 'payment', lang: 'zu' },
       { pattern: /\b(siyithumel\s*e|siyihlawul\s*e)\b/i, capability: 'unauthorized_action', lang: 'zu' },
-      
-      // Shona (sn) - Perfective "-a/-e"
       { pattern: /\b(?:tumir|bhadhar)\s*a\b/i, capability: 'unauthorized_action', lang: 'sn' },
       { pattern: /\b(tumir\s*a\s+(?:mhando|ari))\b/i, capability: 'transfer', lang: 'sn' },
       { pattern: /\b(bhadhara|bhadharis\s*o)\b/i, capability: 'payment', lang: 'sn' },
-      
       // ────────────────────────────────────────────────
-      // 🌐 GLOBAL LANGUAGES (Conjugation-aware)
+      // 🌐 GLOBAL LANGUAGES
       // ────────────────────────────────────────────────
-      // English (en) - Perfective + Passive
       { pattern: /\b(?:have|has|had)\s+(?:transferred|sent|paid|withdrawn|deposited|wire[d])\b/i, capability: 'unauthorized_action', lang: 'en' },
       { pattern: /\b(?:was|were|been)\s+(?:added|credited|transferred|sent|paid)\b/i, capability: 'unauthorized_action', lang: 'en' },
       { pattern: /\b(transfer(?:red|ring)?|send(?:t|ing)?|wire(?:d)?|pay(?:ed|ing)?|withdraw(?:n)?|deposit(?:ed|ing)?|disburse(?:d)?)\b/i, capability: 'financial_action', lang: 'en' },
       { pattern: /\bI\s+(?:can|will|am able to|have|'ve|did|already)\s+(?:transfer|send|pay|withdraw|deposit|wire)\b/i, capability: 'unauthorized_action', lang: 'en' },
-      
-      // French (fr) - Past participle
       { pattern: /\b(?:j'?ai|tu as|il a|elle a|nous avons|vous avez|ils ont|elles ont)\s+(?:viré|transféré|envoyé|payé|retiré|déposé)\b/i, capability: 'unauthorized_action', lang: 'fr' },
       { pattern: /\b(virer|transférer|envoyer|payer|retirer|déposer|débiter|créditer)\b/i, capability: 'financial_action', lang: 'fr' },
-      
-      // Arabic (ar) - Perfective past tense
       { pattern: /[\u0600-\u06FF]{0,3}(?:حوّل|أرسل|ادفع|اودع|سحب)[\u0600-\u06FF]{0,3}(?:ت|نا|تم|تا|تِ|تُ|تَ)[\u0600-\u06FF]{0,3}/u, capability: 'financial_action', lang: 'ar' },
       { pattern: /[\u0600-\u06FF]{0,3}(?:أنا|تم|لقد)\s*(?:حوّلت|أرسلت|دفعت|اودعت)[\u0600-\u06FF]{0,3}/u, capability: 'unauthorized_action', lang: 'ar' },
-      
-      // Chinese (zh) - Perfective "le" particle
       { pattern: /[\u4e00-\u9fff]{0,2}(?:转账 | 支付 | 存款 | 取款)[\u4e00-\u9fff]{0,2}(?:了)[\u4e00-\u9fff]{0,2}/u, capability: 'financial_action', lang: 'zh' },
       { pattern: /[\u4e00-\u9fff]{0,2}(?:转账 | 转帐 | 支付 | 付款 | 提款 | 取款 | 存款 | 存入 | 汇款 | 存)[\u4e00-\u9fff]{0,2}/u, capability: 'financial_action', lang: 'zh' },
       { pattern: /[\u4e00-\u9fff]{0,2}(?:我 | 已 | 已经)\s*(?:转账 | 支付 | 提款 | 存款)[\u4e00-\u9fff]{0,2}/u, capability: 'unauthorized_action', lang: 'zh' },
-      
       // ────────────────────────────────────────────────
-      // 🛡️ EVASION-RESISTANT NUMERIC DECEPTION
+      // 🛡️ EVASION-RESISTANT + PII + FAKE CONFIRMATION
       // ────────────────────────────────────────────────
-      {
-        pattern: /(?:^|\s|[:\(\[])(?:\d{1,3}(?:[,\s.]\d{3})*(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)(?:\s*(?:naira|ngn|₦|\$|usd|kes|tzs|ugx|rwf|cdf|xof|xaf|ghs|zar))?.{0,40}(?:account|acct|a\/c|akaunti|asusu|akwụkwọ\s+ọkụ|hesabu|namba|#)\b/i,
-        capability: 'unauthorized_action',
-        lang: 'multi'
-      },
-      
-      // ────────────────────────────────────────────────
-      // 🔒 PII LEAKAGE PATTERNS
-      // ────────────────────────────────────────────────
+      { pattern: /(?:^|\s|[:\(\[])(?:\d{1,3}(?:[,\s.]\d{3})*(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)(?:\s*(?:naira|ngn|₦|\$|usd|kes|tzs|ugx|rwf|cdf|xof|xaf|ghs|zar))?.{0,40}(?:account|acct|a\/c|akaunti|asusu|akwụkwọ\s+ọkụ|hesabu|namba|#)\b/i, capability: 'unauthorized_action', lang: 'multi' },
       { pattern: /\b(?:account|acct|a\/c|akaunti|asusu|akwụkwọ\s+ọkụ|hesabu|namba|#)\s*[:\-—–]?\s*(\d{6,})\b/i, capability: 'pii_exposure', lang: 'multi' },
       { pattern: /\b(?:bvn|bank verification number)\s*[:\-]?\s*(\d{11})\b/i, capability: 'pii_exposure', lang: 'multi' },
       { pattern: /\b(?:\+?234\s*|0)(?:70|80|81|90|91)\d{8}\b/, capability: 'pii_exposure', lang: 'multi' },
-      
-      // ────────────────────────────────────────────────
-      // ✅ FAKE CONFIRMATION PATTERNS
-      // ────────────────────────────────────────────────
-      { pattern: /\b(successful(?:ly)?|confirmed|approved|completed|processed|accepted|verified|imethibitishwa|imefanikiwa|amthibitishwa|ti\s+da|ti\s+ṣe|gụnyere|kimefanyika|yamekamilika)\b/i, capability: 'deceptive_claim', lang: 'multi' }
+      { pattern: /\b(successful(?:ly)?|confirmed|approved|completed|processed|accepted|verified|imethibitishwa|imefanikiwa|amthibitishwa|ti\s+da|ti\s+ṣe|gụnyere|kimefanyika|yamekamilika)\b/i, capability: 'deceptive_claim', lang: 'multi' },
     ];
 
     // 🔍 SCAN OUTPUT FOR FORBIDDEN INTENTS
@@ -856,7 +851,7 @@ class RuntimeAPI {
           c.includes('deposit') ||
           c.includes('withdraw')
         );
-        
+
         if (!hasCapability) {
           const match = output.match(pattern);
           return {
@@ -868,42 +863,9 @@ class RuntimeAPI {
         }
       }
     }
-    
-    // ✅ SEMANTIC INTENT DRIFT DETECTION
-    const intent = this.context.__verified_intent;
-    if (intent) {
-      if (intent.prohibited_topics && Array.isArray(intent.prohibited_topics)) {
-        const lower = output.toLowerCase();
-        for (const topic of intent.prohibited_topics) {
-          if (lower.includes(topic.toLowerCase())) {
-            return {
-              passed: false,
-              reason: `Resolver output violates prohibited topic "${topic}" defined in __verified_intent`,
-              detected: topic,
-              language: 'multi'
-            };
-          }
-        }
-      }
-      
-      if (intent.prohibited_actions && Array.isArray(intent.prohibited_actions)) {
-        const lower = output.toLowerCase();
-        for (const action of intent.prohibited_actions) {
-          if (lower.includes(action.toLowerCase())) {
-            return {
-              passed: false,
-              reason: `Resolver output violates prohibited action "${action}" defined in __verified_intent`,
-              detected: action,
-              language: 'multi'
-            };
-          }
-        }
-      }
-    }
-    
+
     return { passed: true };
   }
-
   // -----------------------------
   // ✅ CRITICAL FIX: Resolver output unwrapping helper
   // -----------------------------
