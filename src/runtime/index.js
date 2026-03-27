@@ -20,25 +20,29 @@ function getKernelPrivateKey() {
   }
   
   KERNEL_PRIVATE_KEY = fs.readFileSync(absolutePath, 'utf8');
+  console.log('[kernel] ✅ Private key loaded for signing');
   return KERNEL_PRIVATE_KEY;
 }
 
-// ✅ Sign audit data with kernel private key
-function signAuditData(auditData, privateKey) {
-  if (!privateKey) return null;
+// ✅ Sign audit data with ED25519 (Node.js crypto.sign)
+function signAuditData(auditData, privateKeyPem) {
+  if (!privateKeyPem) return null;
   
   try {
-    // Serialize audit data EXACTLY as it will be verified
-    // (sorted keys for deterministic serialization)
+    // Serialize audit data EXACTLY as it will be verified (sorted keys)
     const serialized = JSON.stringify(auditData, Object.keys(auditData).sort());
     
-    // Create signature
-    const sign = crypto.createSign('SHA256');
-    sign.update(serialized);
-    sign.end();
+    // ED25519 signing: use crypto.sign() directly
+    const signature = crypto.sign(
+      null,  // For ED25519, hash algorithm is implicit
+      Buffer.from(serialized, 'utf8'),
+      {
+        key: privateKeyPem,
+        dsaEncoding: 'ieee-p1363',  // Required for ED25519
+      }
+    );
     
-    const signature = sign.sign(privateKey, 'hex');
-    return signature;
+    return signature.toString('hex');
   } catch (err) {
     console.error('[kernel] Signature error:', err.message);
     return null;
@@ -75,8 +79,11 @@ async function execute(workflow, inputs, agentResolver, verbose = false) {
   if (privateKey) {
     try {
       const pubKeyPath = process.env.KERNEL_PUBLIC_KEY_PATH || './kernel-keys/kernel-public.pem';
-      const absolutePubPath = path.isAbsolute(pubKeyPath) ? pubKeyPath : path.join(process.cwd(), pubKeyPath);
+      const absolutePubPath = path.isAbsolute(pubKeyPath) 
+        ? pubKeyPath 
+        : path.join(process.cwd(), pubKeyPath);
       if (fs.existsSync(absolutePubPath)) {
+        // Read and clean PEM for storage
         publicKey = fs.readFileSync(absolutePubPath, 'utf8')
           .replace('-----BEGIN PUBLIC KEY-----', '')
           .replace('-----END PUBLIC KEY-----', '')
@@ -89,8 +96,8 @@ async function execute(workflow, inputs, agentResolver, verbose = false) {
 
   result.__audit = {
     ...auditData,
-    signature,      // ✅ Cryptographic signature
-    publicKey,      // ✅ Public key for verification
+    signature,      // ✅ Cryptographic signature (hex string)
+    publicKey,      // ✅ Public key for verification (cleaned PEM)
   };
 
   return result;
