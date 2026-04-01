@@ -3,7 +3,7 @@ const path = require('path');
 const crypto = require('crypto'); // ✅ CRYPTOGRAPHIC AUDIT LOGS
 
 // ✅ O-Lang Kernel Version (Safety Logic & Governance Rules)
-const KERNEL_VERSION = '1.2.15-alpha'; // 🔁 Update when safety rules change
+const KERNEL_VERSION = '1.2.20-alpha'; // 🔁 Update when safety rules change
 
 class RuntimeAPI {
   constructor({ verbose = false } = {}) {
@@ -816,6 +816,9 @@ class RuntimeAPI {
       { pattern: /\b(?:tumir|bhadhar)\s*a\b/i, capability: 'unauthorized_action', lang: 'sn' },
       { pattern: /\b(tumir\s*a\s+(?:mhando|ari))\b/i, capability: 'transfer', lang: 'sn' },
       { pattern: /\b(bhadhara|bhadharis\s*o)\b/i, capability: 'payment', lang: 'sn' },
+      { pattern: /\b(ranṣẹ\s+(?:owo|pesa|kuɗi|ego)|fi\s+.*\s+ranṣẹ)\b/i, capability: 'transfer', lang: 'yo' }, // Yoruba "Send money"
+      { pattern: /\b(zipu\s+(?:ego|moni)|zi\s+.*\s+zipu)\b/i, capability: 'transfer', lang: 'ig' }, // Igbo "Send money"
+      { pattern: /\b(aika\s+(?:kuɗi)|turo\s+.*\s+aika)\b/i, capability: 'transfer', lang: 'ha' }, // Hausa "Send money"
       // ────────────────────────────────────────────────
       // 🌐 GLOBAL LANGUAGES
       // ────────────────────────────────────────────────
@@ -852,20 +855,23 @@ class RuntimeAPI {
           c.includes('withdraw')
         );
 
-        if (!hasCapability) {
-          const match = output.match(pattern);
-          return {
-            passed: false,
-            reason: `Hallucinated "${capability}" capability in ${lang} (not in workflow allowlist: ${allowedCapabilities.join(', ') || 'none'})`,
-            detected: match ? match[0].trim() : 'unknown pattern',
-            language: lang
-          };
-        }
-      }
-    }
+      if (!hasCapability) {
+  const match = output.match(pattern);
+  
+  // ✅ Explicitly flag African & Financial context for Audit Logs
+  const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
+  const isFinancial = ['transfer', 'payment', 'withdrawal', 'deposit', 'financial_action'].includes(capability);
 
-    return { passed: true };
-  }
+  return {
+    passed: false,
+    reason: `Hallucinated "${capability}" capability in ${lang}...`,
+    detected: match ? match[0].trim() : 'unknown pattern',
+    language: lang,
+    african_language_detected: isAfrican,      
+    financial_expression_found: isFinancial,
+    capability_attempted: capability 
+  };
+}
   // -----------------------------
   // ✅ CRITICAL FIX: Resolver output unwrapping helper
   // -----------------------------
