@@ -721,6 +721,70 @@ class RuntimeAPI {
     });
   }
 
+  // -----------------------------
+  // ✅ KERNEL-LEVEL INPUT VALIDATION (Pre-Flight Safety)
+  // -----------------------------
+  _validateInputs(inputs) {
+    // Only scan specific input fields that contain user text
+    const fieldsToScan = ['user_message', 'user_question', 'text', 'prompt', 'document_text'];
+    
+    for (const field of fieldsToScan) {
+      const text = inputs[field];
+      if (!text || typeof text !== 'string') continue;
+
+      // Re-use the exact same forbiddenPatterns from _validateLLMOutput
+      // 🔒 CONJUGATION-AWARE + EVASION-RESISTANT PAN-AFRICAN INTENT DETECTION
+      const forbiddenPatterns = [
+        // 🇳🇬 NIGERIAN LANGUAGES
+        { pattern: /\b(fi\s+(?:owo|ẹ̀wọ̀|ewo|ku|fun|s'ọkọọ))\b/i, capability: 'transfer', lang: 'yo' },
+        { pattern: /\b(ranṣẹ\s+(?:owo|pesa|kuɗi|ego)|fi\s+.*\s+ranṣẹ)\b/i, capability: 'transfer', lang: 'yo' },
+        { pattern: /\b(ciyar\s*(?:da)?|shiga\s+kuɗi)\b/i, capability: 'transfer', lang: 'ha' },
+        { pattern: /\b(aika\s+(?:kuɗi)|turo\s+.*\s+aika)\b/i, capability: 'transfer', lang: 'ha' },
+        { pattern: /\b(zipu\s+(?:ego|moni)|zi\s+.*\s+zipu)\b/i, capability: 'transfer', lang: 'ig' },
+        { pattern: /\b(buru\s+(?:ego|moni))\b/i, capability: 'transfer', lang: 'ig' },
+        // 🌐 GLOBAL
+        { pattern: /\b(transfer(?:red|ring)?|send(?:t|ing)?|wire(?:d)?)\b/i, capability: 'financial_action', lang: 'en' },
+        { pattern: /\bI\s+(?:can|will|am able to)\s+(?:transfer|send|pay)\b/i, capability: 'unauthorized_action', lang: 'en' },
+        // 🛡️ PII
+        { pattern: /\b(?:account|acct|akaunti|asusu|hesabu|namba|#)\s*[:\-—–]?\s*(\d{6,})\b/i, capability: 'pii_exposure', lang: 'multi' },
+        { pattern: /\b(?:bvn|bank verification number)\s*[:\-]?\s*(\d{11})\b/i, capability: 'pii_exposure', lang: 'multi' },
+        { pattern: /\b(?:\+?234\s*|0)(?:70|80|81|90|91)\d{8}\b/, capability: 'pii_exposure', lang: 'multi' },
+      ];
+
+      for (const { pattern, capability, lang } of forbiddenPatterns) {
+        if (pattern.test(text)) {
+          const match = text.match(pattern);
+          const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
+          const isFinancial = ['transfer', 'payment', 'withdrawal', 'deposit', 'financial_action'].includes(capability);
+
+          // ✅ AUDIT LOG: Input Safety Violation
+          this._createAuditEntry('input_safety_violation', {
+            type: 'blocked_input',
+            field: field,
+            detected_phrase: match ? match[0].trim() : 'unknown pattern',
+            capability: capability,
+            language: lang,
+            african_language_detected: isAfrican,
+            financial_expression_found: isFinancial,
+            severity: 'high'
+          });
+
+          throw new Error(
+            `[O-Lang SAFETY] Blocked Input in "${lang}":\n` +
+            `  → Detected: "${match ? match[0].trim() : 'Pattern Match'}"\n` +
+            `  → Capability: ${capability}\n` +
+            `  → Field: ${field}\n` +
+            `  → African Language Detected: ${isAfrican}\n` +
+            `  → Financial Expression: ${isFinancial}\n` +
+            `\n🛑 Workflow halted before execution.`
+          );
+        }
+      }
+    }
+    return { passed: true };
+  }
+
+
 // -----------------------------
   // ✅ KERNEL-LEVEL LLM HALLUCINATION PREVENTION (CONJUGATION-AWARE + EVASION-RESISTANT)
   // -----------------------------
@@ -1445,6 +1509,9 @@ class RuntimeAPI {
       ...inputs,
       workflow_name: workflow.name
     };
+
+       // ✅ NEW: Validate Inputs BEFORE any step runs
+    this._validateInputs(inputs); 
 
     // ✅ AUDIT LOG: Workflow start (ENHANCED with governance metadata)
     const governanceHash = this._generateGovernanceProfileHash(workflow);
