@@ -919,23 +919,28 @@ class RuntimeAPI {
           c.includes('withdraw')
         );
 
-      if (!hasCapability) {
-  const match = output.match(pattern);
-  
-  // ✅ Explicitly flag African & Financial context for Audit Logs
-  const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
-  const isFinancial = ['transfer', 'payment', 'withdrawal', 'deposit', 'financial_action'].includes(capability);
+        if (!hasCapability) {
+          const match = output.match(pattern);
+          
+          // ✅ Explicitly flag African & Financial context for Audit Logs
+          const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
+          const isFinancial = ['transfer', 'payment', 'withdrawal', 'deposit', 'financial_action'].includes(capability);
 
-  return {
-    passed: false,
-    reason: `Hallucinated "${capability}" capability in ${lang}...`,
-    detected: match ? match[0].trim() : 'unknown pattern',
-    language: lang,
-    african_language_detected: isAfrican,      
-    financial_expression_found: isFinancial,
-    capability_attempted: capability 
-  };
-}
+          return {
+            passed: false,
+            reason: `Hallucinated "${capability}" capability in ${lang}...`,
+            detected: match ? match[0].trim() : 'unknown pattern',
+            language: lang,
+            african_language_detected: isAfrican,      
+            financial_expression_found: isFinancial,
+            capability_attempted: capability 
+          };
+        }
+      }
+    }
+    return { passed: true };
+  }
+
   // -----------------------------
   // ✅ CRITICAL FIX: Resolver output unwrapping helper
   // -----------------------------
@@ -1469,7 +1474,7 @@ class RuntimeAPI {
               const db = this.dbClient.client.db(process.env.DB_NAME || 'olang');
               await db.collection(step.collection).insertOne({
                 workflow_name: this.context.workflow_name || 'unknown',
-                data: sourceValue,
+                 sourceValue,
                 created_at: new Date()
               });
               break;
