@@ -388,9 +388,23 @@ function parseWorkflowLines(lines, filename) {
 const askMatch = line.match(/^Ask\s+(.+)$/i);
 if (askMatch) {
   flushCurrentStep();
+  let actionContent = askMatch[1].trim();
+
+  // ✅ Multiline heredoc support: Ask llm-groq """
+  if (actionContent.endsWith('"""')) {
+    // Consume lines until closing """
+    let multiline = actionContent.slice(0, -3).trim() + ' ';
+    while (i < lines.length) {
+      const nextLine = lines[i++].trim();
+      if (nextLine === '"""') break;
+      multiline += nextLine + ' ';
+    }
+    actionContent = multiline.trim();
+  }
+
   workflow.steps.push({
     type: 'action',
-    actionRaw: `Action ${askMatch[1].trim()}`,
+    actionRaw: `Action ${actionContent}`,
     stepNumber: workflow.steps.length + 1,
     saveAs: null,
     constraints: {}
