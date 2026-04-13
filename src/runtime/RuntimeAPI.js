@@ -729,7 +729,7 @@ class RuntimeAPI {
   // -----------------------------
   _validateInputs(inputs) {
     // Only scan specific input fields that contain user text
-    const fieldsToScan = ['user_message', 'user_question', 'text', 'prompt', 'document_text'];
+    const fieldsToScan = ['user_message', 'user_question', 'text', 'prompt'];
     
     for (const field of fieldsToScan) {
       const text = inputs[field];
