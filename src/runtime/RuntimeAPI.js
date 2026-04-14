@@ -638,17 +638,38 @@ class RuntimeAPI {
     return path.split('.').reduce((o, k) => (o && o[k] !== undefined ? o[k] : undefined), obj);
   }
 
-  evaluateCondition(cond, ctx) {
+   evaluateCondition(cond, ctx) {
     cond = cond.trim();
-    const eq = cond.match(/^\{(.+)\}\s+equals\s+"(.*)"$/);
-    if (eq) return this.getNested(ctx, eq[1]) == eq[2];
+
+    // ✅ 1. Handle Logical OR (|| or 'or')
+    if (/\|\||\bor\b/i.test(cond)) {
+      return cond.split(/\|\||\bor\b/i).some(c => this.evaluateCondition(c.trim(), ctx));
+    }
+    // ✅ 2. Handle Logical AND (&& or 'and')
+    if (/&&|\band\b/i.test(cond)) {
+      return cond.split(/&&|\band\b/i).every(c => this.evaluateCondition(c.trim(), ctx));
+    }
+
+    // ✅ 3. Handle == or === (works with or without {})
+    const eqMatch = cond.match(/^(?:\{(.+)\}|(\w+))\s*===?\s*"(.*)"$/);
+    if (eqMatch) {
+      const key = eqMatch[1] || eqMatch[2];
+      return this.getNested(ctx, key) === eqMatch[3];
+    }
+
+    // ✅ 4. Keep original O-Lang syntax
+    const oldEq = cond.match(/^\{(.+)\}\s+equals\s+"(.*)"$/);
+    if (oldEq) return this.getNested(ctx, oldEq[1]) == oldEq[2];
+
     const gt = cond.match(/^\{(.+)\}\s+greater than\s+(\d+\.?\d*)$/);
     if (gt) return parseFloat(this.getNested(ctx, gt[1])) > parseFloat(gt[2]);
+
     const lt = cond.match(/^\{(.+)\}\s+less than\s+(\d+\.?\d*)$/);
     if (lt) return parseFloat(this.getNested(ctx, lt[1])) < parseFloat(lt[2]);
+
+    // Fallback: truthy check
     return Boolean(this.getNested(ctx, cond.replace(/\{|\}/g, '')));
   }
-
   mathFunctions = {
     add: (a, b) => a + b,
     subtract: (a, b) => a - b,

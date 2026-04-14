@@ -305,6 +305,20 @@ function parseWorkflowLines(lines, filename) {
       continue;
     }
 
+       // ✅ ADD: Set keyword (e.g., Set analysis_result = "")
+    const setMatch = line.match(/^Set\s+(\w+)\s*=\s*(.+)$/i);
+    if (setMatch) {
+      flushCurrentStep();
+      workflow.steps.push({
+        type: 'calculate',
+        stepNumber: workflow.steps.length + 1,
+        actionRaw: setMatch[2].trim(),  // e.g., '""' or '"N/A"'
+        saveAs: setMatch[1].trim(),     // e.g., 'analysis_result'
+        constraints: {}
+      });
+      continue;
+    }
+
     // Debrief
     const debriefMatch = line.match(/^Debrief\s+([^\s]+)\s+with\s+"([^"]*)"$/i);
     if (debriefMatch) {
@@ -589,6 +603,18 @@ function parseBlock(lines) {
       continue;
     }
 
+        // ✅ ADD: Set keyword inside blocks (e.g., Set analysis_result = "")
+    const setMatch = line.match(/^Set\s+(\w+)\s*=\s*(.+)$/i);
+    if (setMatch) {
+      flush(); // Flush any pending step
+      steps.push({
+        type: 'calculate',
+        actionRaw: setMatch[2].trim(),  // e.g., '""' or '"N/A"'
+        saveAs: setMatch[1].trim(),     // e.g., 'analysis_result'
+        constraints: {}
+      });
+      continue;
+    }
     // Fallback
     if (current) {
       current.actionRaw += ' ' + line;  // ← PRESERVED EXACTLY (no normalizeAction)
