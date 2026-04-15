@@ -690,15 +690,38 @@ class RuntimeAPI {
     abs: a => Math.abs(a)
   };
 
-  evaluateMath(expr) {
+    evaluateMath(expr) {
+    // ✅ Handle quoted string literals with interpolation: "{var}" → interpolated string
+    if (typeof expr === 'string') {
+      const trimmed = expr.trim();
+      
+      // Check if it's a quoted string (single or double quotes)
+      if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || 
+          (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+        // Extract the inner content
+        let inner = trimmed.slice(1, -1);
+        
+        // Perform interpolation: replace {var} with context values
+        inner = inner.replace(/\{([^\}]+)\}/g, (_, path) => {
+          const value = this.getNested(this.context, path.trim());
+          return value !== undefined ? String(value) : `{${path}}`;
+        });
+        
+        return inner;
+      }
+    }
+    
+    // ── Original math evaluation logic (unchanged) ──────────────────────────
     expr = expr.replace(/\{([^\}]+)\}/g, (_, path) => {
       const value = this.getNested(this.context, path.trim());
       if (typeof value === 'string') return `"${value.replace(/"/g, '\\"')}"`;
       return value !== undefined ? value : 0;
     });
+    
     const funcNames = Object.keys(this.mathFunctions);
     const safeFunc = {};
     funcNames.forEach(fn => safeFunc[fn] = this.mathFunctions[fn]);
+    
     try {
       const f = new Function(...funcNames, `return ${expr};`);
       return f(...funcNames.map(fn => safeFunc[fn]));
