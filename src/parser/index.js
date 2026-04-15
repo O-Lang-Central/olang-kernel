@@ -462,6 +462,22 @@ if (returnMatch) {
 
   flushCurrentStep(); // ✅ Final flush
 
+    // ✅ FALLBACK: Scan raw lines for Return if regex missed it (Windows line endings, hidden chars, etc.)
+  if (workflow.returnValues.length === 0) {
+    for (let j = 0; j < lines.length; j++) {
+      const clean = lines[j].replace(/\r/g, '').trim();
+      const match = clean.match(/^Return\s+(.+)$/i);
+      if (match) {
+        console.log(`[PARSER] Recovered Return at line ${j+1}: "${clean}"`);
+        workflow.returnValues = match[1]
+          .split(',')
+          .map(r => r.trim())
+          .filter(r => r !== '');
+        break;
+      }
+    }
+  }
+
   // Post-process Save as in actionRaw - ✅ Apply normalization
   workflow.steps.forEach(step => {
     if (step.actionRaw && step.saveAs === null) {
