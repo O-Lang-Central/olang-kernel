@@ -1258,9 +1258,14 @@ const forbiddenPatterns = [
       throw new Error(errorMessage);
     };
 
-    switch (stepType) {
+      switch (stepType) {
       case 'calculate': {
-        const result = this.evaluateMath(step.expression || step.actionRaw);
+        // ✅ Interpolate variables in the expression before evaluation
+        let expr = step.expression || step.actionRaw;
+        if (typeof expr === 'string' && expr.includes('{')) {
+          expr = this._safeInterpolate(expr, this.context, 'calculate step');
+        }
+        const result = this.evaluateMath(expr);
         if (step.saveAs) this.context[step.saveAs] = result;
         break;
       }
