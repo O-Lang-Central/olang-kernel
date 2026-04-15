@@ -427,16 +427,23 @@ function parseWorkflowLines(lines, filename) {
     }
 
     // ✅ ADD: Return keyword support (ensures wf.returnValues is populated)
-    const returnMatch = line.match(/^Return\s+(.+)$/i);
-    if (returnMatch) {
-      flushCurrentStep();
-      workflow.returnValues = returnMatch[1]
-        .split(',')
-        .map(r => r.trim())
-        .filter(r => r !== '');
-      continue;
-    }
-
+// ✅ ADD: Return keyword support (with debug logging)
+const returnMatch = line.match(/^Return\s+(.+)$/i);
+if (returnMatch) {
+  flushCurrentStep();
+  const rawReturns = returnMatch[1];
+  console.log(`[PARSER DEBUG] Return line: "${line}"`);
+  console.log(`[PARSER DEBUG] Return match[1]: "${rawReturns}"`);
+  console.log(`[PARSER DEBUG] Return match[1] char codes: ${Array.from(rawReturns).map(c => c.charCodeAt(0))}`);
+  
+  workflow.returnValues = rawReturns
+    .split(',')
+    .map(r => r.trim())
+    .filter(r => r !== '');
+    
+  console.log(`[PARSER DEBUG] Parsed returnValues: ${JSON.stringify(workflow.returnValues)}`);
+  continue;
+}
     // Fallback: treat as action
     if (line.trim() !== '') {
       if (!currentStep) {
