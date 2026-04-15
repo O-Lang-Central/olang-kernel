@@ -1086,12 +1086,15 @@ const forbiddenPatterns = [
   // -----------------------------
   // ✅ CRITICAL FIX: Resolver output unwrapping helper
   // -----------------------------
-  _unwrapResolverResult(result) {
-    if (result && typeof result === 'object' && 'output' in result && result.output !== undefined) {
-      return result.output;
-    }
-    return result;
+_unwrapResolverResult(result) {
+  if (result && typeof result === 'object') {
+    if (result.output !== undefined) return result.output;
+    if (result.response !== undefined) return result.response; // ✅ ADD THIS
+    if (result.text !== undefined) return result.text;
+    if (result.content !== undefined) return result.content;
   }
+  return result;
+}
 
   // -----------------------------
   // Step execution (WHERE RESOLVERS ARE INVOKED)
