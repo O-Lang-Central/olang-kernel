@@ -878,41 +878,57 @@ class RuntimeAPI {
     if (!output || typeof output !== 'string') return { passed: true };
 
     // ── __verified_intent takes priority ──────────────────────────────────────
-    // If the workflow author has defined intent rules, use those exclusively.
-    // This makes governance dynamic — skip hardcoded patterns entirely.
-    const intent = this.context.__verified_intent;
-    if (intent) {
-      if (intent.prohibited_actions && Array.isArray(intent.prohibited_actions)) {
-        const lower = output.toLowerCase();
-        for (const action of intent.prohibited_actions) {
-          if (lower.includes(action.toLowerCase())) {
-            return {
-              passed: false,
-              reason: `Output violates prohibited action "${action}" defined in __verified_intent`,
-              detected: action,
-              language: 'multi'
-            };
-          }
-        }
+const intent = this.context.__verified_intent;
+if (intent) {
+  if (intent.prohibited_actions && Array.isArray(intent.prohibited_actions)) {
+    const lower = output.toLowerCase();
+    for (const action of intent.prohibited_actions) {
+      if (lower.includes(action.toLowerCase())) {
+        return {
+          passed: false,
+          reason: `Output violates prohibited action "${action}" defined in __verified_intent`,
+          detected: action,
+          language: 'multi'
+        };
       }
-
-      if (intent.prohibited_topics && Array.isArray(intent.prohibited_topics)) {
-        const lower = output.toLowerCase();
-        for (const topic of intent.prohibited_topics) {
-          if (lower.includes(topic.toLowerCase())) {
-            return {
-              passed: false,
-              reason: `Output violates prohibited topic "${topic}" defined in __verified_intent`,
-              detected: topic,
-              language: 'multi'
-            };
-          }
-        }
-      }
-
-      // __verified_intent present and passed — skip hardcoded patterns
-      return { passed: true };
     }
+  }
+
+  if (intent.prohibited_topics && Array.isArray(intent.prohibited_topics)) {
+    for (const topic of intent.prohibited_topics) {
+      const isRegex = typeof topic === 'object' && topic.pattern;
+      let matched = false;
+      let detected = '';
+
+      if (isRegex) {
+        try {
+          const re = new RegExp(topic.pattern, topic.flags || 'i');
+          const match = output.match(re);
+          matched = !!match;
+          detected = match ? match[0] : topic.pattern;
+        } catch (e) {
+          this.addWarning(`Invalid prohibited_topic regex: "${topic.pattern}" — ${e.message}`);
+          continue;
+        }
+      } else {
+        matched = output.toLowerCase().includes(topic.toLowerCase());
+        detected = topic;
+      }
+
+      if (matched) {
+        return {
+          passed: false,
+          reason: `Output violates prohibited topic "${isRegex ? topic.pattern : topic}" defined in __verified_intent`,
+          detected,
+          language: 'multi'
+        };
+      }
+    }
+  }
+
+  // __verified_intent present and passed — skip hardcoded patterns
+  return { passed: true };
+}
 
     // ── No __verified_intent — fall through to hardcoded patterns ─────────────
     // 🔑 Extract allowed capabilities from workflow allowlist
