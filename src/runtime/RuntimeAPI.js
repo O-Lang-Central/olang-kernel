@@ -3,7 +3,7 @@ const path = require('path');
 const crypto = require('crypto'); // ✅ CRYPTOGRAPHIC AUDIT LOGS
 
 // ✅ O-Lang Kernel Version (Safety Logic & Governance Rules)
-const KERNEL_VERSION = '1.2.20-alpha'; // 🔁 Update when safety rules change
+const KERNEL_VERSION = '1.2.30-alpha'; // 🔁 Update when safety rules change
 
 class RuntimeAPI {
   constructor({ verbose = false } = {}) {

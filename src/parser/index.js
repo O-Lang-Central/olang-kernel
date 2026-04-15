@@ -305,7 +305,7 @@ function parseWorkflowLines(lines, filename) {
       continue;
     }
 
-       // ✅ ADD: Set keyword (e.g., Set analysis_result = "")
+    // ✅ ADD: Set keyword (e.g., Set analysis_result = "")
     const setMatch = line.match(/^Set\s+(\w+)\s*=\s*(.+)$/i);
     if (setMatch) {
       flushCurrentStep();
@@ -399,38 +399,41 @@ function parseWorkflowLines(lines, filename) {
     }
 
     // Ask (for Notify/resolver calls) - ✅ PRESERVE TARGET EXACTLY (NO NORMALIZATION)
-const askMatch = line.match(/^Ask\s+(.+)$/i);
-if (askMatch) {
-  flushCurrentStep();
-  let actionContent = askMatch[1].trim();
+    const askMatch = line.match(/^Ask\s+(.+)$/i);
+    if (askMatch) {
+      flushCurrentStep();
+      let actionContent = askMatch[1].trim();
 
-  // ✅ Multiline heredoc support: Ask llm-groq """
-  if (actionContent.endsWith('"""')) {
-    // Consume lines until closing """
-    let multiline = actionContent.slice(0, -3).trim() + ' ';
-    while (i < lines.length) {
-      const nextLine = lines[i++].trim();
-      if (nextLine === '"""') break;
-      multiline += nextLine + ' ';
+      // ✅ Multiline heredoc support: Ask llm-groq """
+      if (actionContent.endsWith('"""')) {
+        // Consume lines until closing """
+        let multiline = actionContent.slice(0, -3).trim() + ' ';
+        while (i < lines.length) {
+          const nextLine = lines[i++].trim();
+          if (nextLine === '"""') break;
+          multiline += nextLine + ' ';
+        }
+        actionContent = multiline.trim();
+      }
+
+      workflow.steps.push({
+        type: 'action',
+        actionRaw: `Action ${actionContent}`,
+        stepNumber: workflow.steps.length + 1,
+        saveAs: null,
+        constraints: {}
+      });
+      continue;
     }
-    actionContent = multiline.trim();
-  }
 
-  workflow.steps.push({
-    type: 'action',
-    actionRaw: `Action ${actionContent}`,
-    stepNumber: workflow.steps.length + 1,
-    saveAs: null,
-    constraints: {}
-  });
-  continue;
-}
-
-    // Return
+    // ✅ ADD: Return keyword support (ensures wf.returnValues is populated)
     const returnMatch = line.match(/^Return\s+(.+)$/i);
     if (returnMatch) {
       flushCurrentStep();
-      workflow.returnValues = returnMatch[1].split(',').map(r => r.trim()).filter(r => r !== '');
+      workflow.returnValues = returnMatch[1]
+        .split(',')
+        .map(r => r.trim())
+        .filter(r => r !== '');
       continue;
     }
 
@@ -603,7 +606,7 @@ function parseBlock(lines) {
       continue;
     }
 
-        // ✅ ADD: Set keyword inside blocks (e.g., Set analysis_result = "")
+    // ✅ ADD: Set keyword inside blocks (e.g., Set analysis_result = "")
     const setMatch = line.match(/^Set\s+(\w+)\s*=\s*(.+)$/i);
     if (setMatch) {
       flush(); // Flush any pending step
@@ -615,6 +618,15 @@ function parseBlock(lines) {
       });
       continue;
     }
+
+    // ✅ ADD: Return keyword inside blocks (rare but supported)
+    const returnMatch = line.match(/^Return\s+(.+)$/i);
+    if (returnMatch) {
+      flush();
+      // Note: Return inside blocks is unusual; this just parses it
+      continue;
+    }
+
     // Fallback
     if (current) {
       current.actionRaw += ' ' + line;  // ← PRESERVED EXACTLY (no normalizeAction)
