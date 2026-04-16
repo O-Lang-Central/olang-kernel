@@ -771,128 +771,170 @@ class RuntimeAPI {
   // -----------------------------
   // ✅ KERNEL-LEVEL INPUT VALIDATION (Pre-Flight Safety)
   // -----------------------------
-  _validateInputs(inputs) {
-    // Only scan specific input fields that contain user text
-    const fieldsToScan = ['user_message', 'user_question', 'text', 'prompt'];
-    
-    for (const field of fieldsToScan) {
-      const text = inputs[field];
-      if (!text || typeof text !== 'string') continue;
+  // -----------------------------
+// ✅ KERNEL-LEVEL INPUT VALIDATION (Pre-Flight Safety) - ENHANCED WITH CONTEXTUAL ALLOWLIST
+// -----------------------------
+_validateInputs(inputs) {
+  // Only scan specific input fields that contain user text
+  const fieldsToScan = ['user_message', 'user_question', 'text', 'prompt', 'document_text'];
+  
+  for (const field of fieldsToScan) {
+    const text = inputs[field];
+    if (!text || typeof text !== 'string') continue;
 
-      // 🔒 CONJUGATION-AWARE + EVASION-RESISTANT PAN-AFRICAN INTENT DETECTION (INPUT)
-      const forbiddenPatterns = [
-        // ────────────────────────────────────────────────
-        // 🇳🇬 NIGERIAN LANGUAGES (Fixed Unicode Boundaries)
-        // ────────────────────────────────────────────────
+    // 🔒 CONJUGATION-AWARE + EVASION-RESISTANT PAN-AFRICAN INTENT DETECTION (INPUT)
+    const forbiddenPatterns = [
+      // ────────────────────────────────────────────────
+      // 🇳🇬 NIGERIAN LANGUAGES (Fixed Unicode Boundaries)
+      // ────────────────────────────────────────────────
+      
+      // YORUBA: Removed trailing \b after 'ṣẹ' to fix Unicode matching
+      { pattern: /fi\s+(?:owo|ẹ̀wọ̀|ewo|ku|fun|s'ọkọọ)/i, capability: 'transfer', lang: 'yo' },
+      { pattern: /ranṣẹ\s+(?:owo|pesa|kuɗi|ego)/i, capability: 'transfer', lang: 'yo' },
+      { pattern: /fi\s+\w+\s+\w+\s+ranṣẹ/i, capability: 'transfer', lang: 'yo' }, // Catches "Fi 5000 naira ranṣẹ"
+      { pattern: /san\s+(?:owo|ẹ̀wọ̀|ewo|fun|wo)/i, capability: 'payment', lang: 'yo' },
+      { pattern: /gba\s+owo/i, capability: 'withdrawal', lang: 'yo' },
+      { pattern: /\bti\s+(?:fi|san|gba|da|lo)/i, capability: 'unauthorized_action', lang: 'yo' },
+      { pattern: /\b(?:ń|ǹ|n)\s+(?:fi|san|gba)/i, capability: 'unauthorized_action', lang: 'yo' },
+      { pattern: /\b(mo\s+ti\s+(?:fi|san|gba))/i, capability: 'unauthorized_action', lang: 'yo' },
+
+      // HAUSA: ✅ FIXED - Aggressive Substring Match (No Boundaries)
+      { pattern: /aika.{0,30}ku(?:ɗ|d)i/iu, capability: 'transfer', lang: 'ha' },
+      { pattern: /ciyar\s*(?:da)?/i, capability: 'transfer', lang: 'ha' },
+      { pattern: /shiga\s+ku(?:ɗ|d)i/iu, capability: 'transfer', lang: 'ha' },
+      { pattern: /turo\s+.*\s+aika/i, capability: 'transfer', lang: 'ha' },
+      { pattern: /biya\s*(?:da)?/i, capability: 'payment', lang: 'ha' },
+      { pattern: /sahaw[ae]\s+ku(?:ɗ|d)i/iu, capability: 'withdrawal', lang: 'ha' },
+      { pattern: /(?:ya|ta|su)\s+(?:ciyar|biya|sahawa|sake)/i, capability: 'unauthorized_action', lang: 'ha' },
+      { pattern: /(?:za\s+a|za\s+ta)\s+(?:ciyar|biya)/i, capability: 'unauthorized_action', lang: 'ha' },
+      { pattern: /ina\s+(?:ciyar|biya|sahawa)/i, capability: 'unauthorized_action', lang: 'ha' },
+
+
+      // IGBO: Removed trailing \b after 'igo'
+      { pattern: /zipu\s+(?:ego|moni|isi|na)/i, capability: 'transfer', lang: 'ig' },
+      { pattern: /buru\s+(?:ego|moni|isi)/i, capability: 'transfer', lang: 'ig' },
+      { pattern: /zi\s+.*\s+zipu/i, capability: 'transfer', lang: 'ig' },
+      { pattern: /tinye\s+(?:ego|moni|isi)/i, capability: 'deposit', lang: 'ig' },
+      { pattern: /(?:ziri|bururu|tinyere|gbara)/i, capability: 'unauthorized_action', lang: 'ig' },
+      { pattern: /m\s+(?:ziri|buru|zipuru|tinyere)/i, capability: 'unauthorized_action', lang: 'ig' },
+
+      // SWAHILI: ✅ FIXED - Catch Conjugated Forms (ni-li-pe, a-li-pe)
+      { pattern: /tuma\s+(?:pesa|fedha)/i, capability: 'transfer', lang: 'sw' },
+      { pattern: /pelek[ae]?\s+(?:pesa|fedha)/i, capability: 'transfer', lang: 'sw' },
+      { pattern: /wasilisha/i, capability: 'transfer', lang: 'sw' },
+      { pattern: /\b\w*lip[ae]\w*/i, capability: 'payment', lang: 'sw' },
+      { pattern: /maliza\s+malipo/i, capability: 'payment', lang: 'sw' },
+      { pattern: /ongez[ae]?\s*(?:kiasi|pesa|fedha)/i, capability: 'deposit', lang: 'sw' },
+      { pattern: /wek[ae]?\s+(?:katika|ndani)\s+(?:akaunti|hisa)/i, capability: 'deposit', lang: 'sw' },
+      { pattern: /nime(?:tuma|lipa|ongeza|weka|peleka)/i, capability: 'unauthorized_action', lang: 'sw' },
+
+
+      // OTHER AFRICAN: ✅ FIXED - Direct Unicode Substring
+      // Amharic: Match roots anywhere
+  { pattern: /\u120b\u12ad/u, capability: 'transfer', lang: 'am' },
+  { pattern: /\u1308\u1263/u, capability: 'deposit', lang: 'am' },
+  { pattern: /\u12ad\u134c\u120d/u, capability: 'payment', lang: 'am' },
+  { pattern: /[\u1200-\u137F]{0,4}(?:\u1270\u120b\u120b\u1348|\u120b\u12ad|\u12ad\u134c\u120d|\u1338\u121d\u122d|\u12c8\u1323|\u1308\u1263)[\u1200-\u137F]{0,2}/u, capability: 'financial_action', lang: 'am' },
+      
+      // Somali
+      { pattern: /dir\s+(?:lacag|maal|qarsoon)/i, capability: 'transfer', lang: 'so' },
+      { pattern: /bixi|bixis\s*o/i, capability: 'payment', lang: 'so' },
+      
+      // Zulu: ✅ FIXED - Handle Subject Concords (u-thumela, ngi-hlawule)
+      { pattern: /thumel/i, capability: 'transfer', lang: 'zu' }, // Matches root inside uthumela, ngithumela
+      { pattern: /thumel.*imali/i, capability: 'transfer', lang: 'zu' },
+      { pattern: /hlawul/i, capability: 'payment', lang: 'zu' },  // Matches root inside hlawula, ngihlawule
+      { pattern: /hlawul.*imali/i, capability: 'payment', lang: 'zu' },
+
+      // ────────────────────────────────────────────────
+      // 🌐 GLOBAL LANGUAGES
+      // ────────────────────────────────────────────────
+      { pattern: /\b(transfer(?:red|ring)?|send(?:t|ing)?|wire(?:d)?|pay(?:ed|ing)?|withdraw(?:n)?|deposit(?:ed|ing)?)\b/i, capability: 'financial_action', lang: 'en' },
+      { pattern: /\bI\s+(?:can|will|am able to|have|'ve|did|already)\s+(?:transfer|send|pay|withdraw|deposit|wire)\b/i, capability: 'unauthorized_action', lang: 'en' },
+      { pattern: /\b(virer|transférer|envoyer|payer|retirer|déposer)\b/i, capability: 'financial_action', lang: 'fr' },
+      { pattern: /[\u0600-\u06FF]{0,3}(?:حوّل|أرسل|ادفع|اودع|سحب)[\u0600-\u06FF]{0,3}/u, capability: 'financial_action', lang: 'ar' },
+      { pattern: /[\u4e00-\u9fff]{0,2}(?:转账 | 支付 | 存款 | 取款)[\u4e00-\u9fff]{0,2}/u, capability: 'financial_action', lang: 'zh' },
+
+      // ────────────────────────────────────────────────
+      // 🛡️ PII & EVASION
+      // ────────────────────────────────────────────────
+     { pattern: /\b(?:\+?234\s*|0)(?:70|80|81|90|91)\d{8}\b/, capability: 'pii_exposure', lang: 'multi' },
+     { pattern: /\b(?:bvn|bank\s+verification\s+number)\b.{0,20}\d{11}/i, capability: 'pii_exposure', lang: 'multi' },
+     { pattern: /(?:account|acct|a\/c|akaunti|asusu|hesabu|namba|#)\s*[:\-—–]?\s*(\d{6,})/i, capability: 'pii_exposure', lang: 'multi' },
+     { pattern: /\b(successful(?:ly)?|confirmed|approved|completed|processed|verified|imethibitishwa|imefanikiwa)\b/i, capability: 'deceptive_claim', lang: 'multi' },
+    ];
+
+    for (const { pattern, capability, lang } of forbiddenPatterns) {
+      if (pattern.test(text)) {
+        const match = text.match(pattern);
+        const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
+        const isFinancial = ['transfer', 'payment', 'withdrawal', 'deposit', 'financial_action'].includes(capability);
+
+        // ✅ NEW: Check if this is a legal context with contextual allowlist
+        const isLegalContext = 
+          this.context.__verified_intent?.scope === 'legal_analysis_only' ||
+          inputs.doc_type === 'contract' || 
+          inputs.doc_type === 'nda' ||
+          inputs.doc_type === 'agreement' ||
+          (typeof text === 'string' && /clause|term|agreement|contract|obligation|penalty|damages|breach|party|shall|herein/i.test(text));
         
-        // YORUBA: Removed trailing \b after 'ṣẹ' to fix Unicode matching
-        { pattern: /fi\s+(?:owo|ẹ̀wọ̀|ewo|ku|fun|s'ọkọọ)/i, capability: 'transfer', lang: 'yo' },
-        { pattern: /ranṣẹ\s+(?:owo|pesa|kuɗi|ego)/i, capability: 'transfer', lang: 'yo' },
-        { pattern: /fi\s+\w+\s+\w+\s+ranṣẹ/i, capability: 'transfer', lang: 'yo' }, // Catches "Fi 5000 naira ranṣẹ"
-        { pattern: /san\s+(?:owo|ẹ̀wọ̀|ewo|fun|wo)/i, capability: 'payment', lang: 'yo' },
-        { pattern: /gba\s+owo/i, capability: 'withdrawal', lang: 'yo' },
-        { pattern: /\bti\s+(?:fi|san|gba|da|lo)/i, capability: 'unauthorized_action', lang: 'yo' },
-        { pattern: /\b(?:ń|ǹ|n)\s+(?:fi|san|gba)/i, capability: 'unauthorized_action', lang: 'yo' },
-        { pattern: /\b(mo\s+ti\s+(?:fi|san|gba))/i, capability: 'unauthorized_action', lang: 'yo' },
-
-        // HAUSA: ✅ FIXED - Aggressive Substring Match (No Boundaries)
-        { pattern: /aika.{0,30}ku(?:ɗ|d)i/iu, capability: 'transfer', lang: 'ha' },
-        { pattern: /ciyar\s*(?:da)?/i, capability: 'transfer', lang: 'ha' },
-        { pattern: /shiga\s+ku(?:ɗ|d)i/iu, capability: 'transfer', lang: 'ha' },
-        { pattern: /turo\s+.*\s+aika/i, capability: 'transfer', lang: 'ha' },
-        { pattern: /biya\s*(?:da)?/i, capability: 'payment', lang: 'ha' },
-        { pattern: /sahaw[ae]\s+ku(?:ɗ|d)i/iu, capability: 'withdrawal', lang: 'ha' },
-        { pattern: /(?:ya|ta|su)\s+(?:ciyar|biya|sahawa|sake)/i, capability: 'unauthorized_action', lang: 'ha' },
-        { pattern: /(?:za\s+a|za\s+ta)\s+(?:ciyar|biya)/i, capability: 'unauthorized_action', lang: 'ha' },
-        { pattern: /ina\s+(?:ciyar|biya|sahawa)/i, capability: 'unauthorized_action', lang: 'ha' },
-
-
-        // IGBO: Removed trailing \b after 'igo'
-        { pattern: /zipu\s+(?:ego|moni|isi|na)/i, capability: 'transfer', lang: 'ig' },
-        { pattern: /buru\s+(?:ego|moni|isi)/i, capability: 'transfer', lang: 'ig' },
-        { pattern: /zi\s+.*\s+zipu/i, capability: 'transfer', lang: 'ig' },
-        { pattern: /tinye\s+(?:ego|moni|isi)/i, capability: 'deposit', lang: 'ig' },
-        { pattern: /(?:ziri|bururu|tinyere|gbara)/i, capability: 'unauthorized_action', lang: 'ig' },
-        { pattern: /m\s+(?:ziri|buru|zipuru|tinyere)/i, capability: 'unauthorized_action', lang: 'ig' },
-
-        // SWAHILI: ✅ FIXED - Catch Conjugated Forms (ni-li-pe, a-li-pe)
-        { pattern: /tuma\s+(?:pesa|fedha)/i, capability: 'transfer', lang: 'sw' },
-        { pattern: /pelek[ae]?\s+(?:pesa|fedha)/i, capability: 'transfer', lang: 'sw' },
-        { pattern: /wasilisha/i, capability: 'transfer', lang: 'sw' },
-        { pattern: /\b\w*lip[ae]\w*/i, capability: 'payment', lang: 'sw' },
-        { pattern: /maliza\s+malipo/i, capability: 'payment', lang: 'sw' },
-        { pattern: /ongez[ae]?\s*(?:kiasi|pesa|fedha)/i, capability: 'deposit', lang: 'sw' },
-        { pattern: /wek[ae]?\s+(?:katika|ndani)\s+(?:akaunti|hisa)/i, capability: 'deposit', lang: 'sw' },
-        { pattern: /nime(?:tuma|lipa|ongeza|weka|peleka)/i, capability: 'unauthorized_action', lang: 'sw' },
-
-
-        // OTHER AFRICAN: ✅ FIXED - Direct Unicode Substring
-        // Amharic: Match roots anywhere
-    { pattern: /\u120b\u12ad/u, capability: 'transfer', lang: 'am' },
-    { pattern: /\u1308\u1263/u, capability: 'deposit', lang: 'am' },
-    { pattern: /\u12ad\u134c\u120d/u, capability: 'payment', lang: 'am' },
-    { pattern: /[\u1200-\u137F]{0,4}(?:\u1270\u120b\u120b\u1348|\u120b\u12ad|\u12ad\u134c\u120d|\u1338\u121d\u122d|\u12c8\u1323|\u1308\u1263)[\u1200-\u137F]{0,2}/u, capability: 'financial_action', lang: 'am' },
-        
-        // Somali
-        { pattern: /dir\s+(?:lacag|maal|qarsoon)/i, capability: 'transfer', lang: 'so' },
-        { pattern: /bixi|bixis\s*o/i, capability: 'payment', lang: 'so' },
-        
-        // Zulu: ✅ FIXED - Handle Subject Concords (u-thumela, ngi-hlawule)
-        { pattern: /thumel/i, capability: 'transfer', lang: 'zu' }, // Matches root inside uthumela, ngithumela
-        { pattern: /thumel.*imali/i, capability: 'transfer', lang: 'zu' },
-        { pattern: /hlawul/i, capability: 'payment', lang: 'zu' },  // Matches root inside hlawula, ngihlawule
-        { pattern: /hlawul.*imali/i, capability: 'payment', lang: 'zu' },
-
-        // ────────────────────────────────────────────────
-        // 🌐 GLOBAL LANGUAGES
-        // ────────────────────────────────────────────────
-        { pattern: /\b(transfer(?:red|ring)?|send(?:t|ing)?|wire(?:d)?|pay(?:ed|ing)?|withdraw(?:n)?|deposit(?:ed|ing)?)\b/i, capability: 'financial_action', lang: 'en' },
-        { pattern: /\bI\s+(?:can|will|am able to|have|'ve|did|already)\s+(?:transfer|send|pay|withdraw|deposit|wire)\b/i, capability: 'unauthorized_action', lang: 'en' },
-        { pattern: /\b(virer|transférer|envoyer|payer|retirer|déposer)\b/i, capability: 'financial_action', lang: 'fr' },
-        { pattern: /[\u0600-\u06FF]{0,3}(?:حوّل|أرسل|ادفع|اودع|سحب)[\u0600-\u06FF]{0,3}/u, capability: 'financial_action', lang: 'ar' },
-        { pattern: /[\u4e00-\u9fff]{0,2}(?:转账 | 支付 | 存款 | 取款)[\u4e00-\u9fff]{0,2}/u, capability: 'financial_action', lang: 'zh' },
-
-        // ────────────────────────────────────────────────
-        // 🛡️ PII & EVASION
-        // ────────────────────────────────────────────────
-       { pattern: /\b(?:\+?234\s*|0)(?:70|80|81|90|91)\d{8}\b/, capability: 'pii_exposure', lang: 'multi' },
-       { pattern: /\b(?:bvn|bank\s+verification\s+number)\b.{0,20}\d{11}/i, capability: 'pii_exposure', lang: 'multi' },
-       { pattern: /(?:account|acct|a\/c|akaunti|asusu|hesabu|namba|#)\s*[:\-—–]?\s*(\d{6,})/i, capability: 'pii_exposure', lang: 'multi' },
-       { pattern: /\b(successful(?:ly)?|confirmed|approved|completed|processed|verified|imethibitishwa|imefanikiwa)\b/i, capability: 'deceptive_claim', lang: 'multi' },
-      ];
-
-      for (const { pattern, capability, lang } of forbiddenPatterns) {
-        if (pattern.test(text)) {
-          const match = text.match(pattern);
-          const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
-          const isFinancial = ['transfer', 'payment', 'withdrawal', 'deposit', 'financial_action'].includes(capability);
-
-          // ✅ AUDIT LOG: Input Safety Violation
-          this._createAuditEntry('input_safety_violation', {
-            type: 'blocked_input',
-            field: field,
-            detected_phrase: match ? match[0].trim() : 'unknown pattern',
-            capability: capability,
-            language: lang,
-            african_language_detected: isAfrican,
-            financial_expression_found: isFinancial,
-            severity: 'high'
+        // ✅ NEW: Check contextual allowlist if in legal context
+        if (isLegalContext && this.context.__verified_intent?.contextual_allowlist) {
+          const allowlist = this.context.__verified_intent.contextual_allowlist;
+          const triggerWord = match ? match[0].toLowerCase() : '';
+          
+          const allowed = allowlist.some(rule => {
+            if (triggerWord.includes(rule.trigger.toLowerCase())) {
+              // Check if required legal keywords are present
+              return rule.requires.some(keyword => 
+                text.toLowerCase().includes(keyword.toLowerCase())
+              );
+            }
+            return false;
           });
-
-          throw new Error(
-            `[O-Lang SAFETY] Blocked Input in "${lang}":\n` +
-            `  → Detected: "${match ? match[0].trim() : 'Pattern Match'}"\n` +
-            `  → Capability: ${capability}\n` +
-            `  → Field: ${field}\n` +
-            `  → African Language Detected: ${isAfrican}\n` +
-            `  → Financial Expression: ${isFinancial}\n` +
-            `\n🛑 Workflow halted before execution.`
-          );
+          
+          if (allowed) {
+            // ✅ AUDIT LOG: Contextual allowlist bypass
+            this._createAuditEntry('safety_bypass', {
+              type: 'contextual_allowlist',
+              trigger: triggerWord,
+              legal_context: true,
+              matched_keywords: this.context.__verified_intent.contextual_allowlist
+                .find(r => triggerWord.includes(r.trigger.toLowerCase()))?.requires || [],
+              severity: 'info'
+            });
+            continue; // Skip blocking this match
+          }
         }
+
+        // ✅ AUDIT LOG: Input Safety Violation (only if not bypassed)
+        this._createAuditEntry('input_safety_violation', {
+          type: 'blocked_input',
+          field: field,
+          detected_phrase: match ? match[0].trim() : 'unknown pattern',
+          capability: capability,
+          language: lang,
+          african_language_detected: isAfrican,
+          financial_expression_found: isFinancial,
+          legal_context_detected: isLegalContext,
+          severity: 'high'
+        });
+
+        throw new Error(
+          `[O-Lang SAFETY] Blocked Input in "${lang}":\n` +
+          `  → Detected: "${match ? match[0].trim() : 'Pattern Match'}"\n` +
+          `  → Capability: ${capability}\n` +
+          `  → Field: ${field}\n` +
+          `  → African Language Detected: ${isAfrican}\n` +
+          `  → Financial Expression: ${isFinancial}\n` +
+          `  → Legal Context: ${isLegalContext}\n` +
+          `\n🛑 Workflow halted before execution.`
+        );
       }
     }
-    return { passed: true };
   }
+  return { passed: true };
+}
 
 // -----------------------------
   // ✅ KERNEL-LEVEL LLM HALLUCINATION PREVENTION (CONJUGATION-AWARE + EVASION-RESISTANT)
