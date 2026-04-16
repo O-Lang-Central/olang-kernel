@@ -870,28 +870,44 @@ _validateInputs(inputs) {
         const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
         const isFinancial = ['transfer', 'payment', 'withdrawal', 'deposit', 'financial_action'].includes(capability);
 
-        // ✅ NEW: Check if this is a legal context with contextual allowlist
-        const isLegalContext = 
-          this.context.__verified_intent?.scope === 'legal_analysis_only' ||
-          inputs.doc_type === 'contract' || 
-          inputs.doc_type === 'nda' ||
-          inputs.doc_type === 'agreement' ||
-          (typeof text === 'string' && /clause|term|agreement|contract|obligation|penalty|damages|breach|party|shall|herein/i.test(text));
+       // ✅ DECOUPLED: Check legal context via standardized signals (not UI fields)
+    const intent = this.context.__verified_intent || {};
+    const signals = intent.context_signals || {};
+
+    const isLegalContext = 
+  // Signal 1: Explicit scope declaration
+  intent.scope === 'legal_analysis_only' ||
+  
+  // Signal 2: Standardized context signals (server-mapped, UI-agnostic)
+  signals.isLegalDocument === true ||
+  signals.documentCategory === 'contract' ||
+  signals.documentCategory === 'nda' ||
+  signals.documentCategory === 'agreement' ||
+  signals.documentCategory === 'legal' ||
+  
+  // Signal 3: Semantic fallback (works even if signals missing)
+  (typeof text === 'string' && /clause|term|agreement|contract|obligation|penalty|damages|breach|party|shall|herein/i.test(text));
         
         // ✅ NEW: Check contextual allowlist if in legal context
         if (isLegalContext && this.context.__verified_intent?.contextual_allowlist) {
           const allowlist = this.context.__verified_intent.contextual_allowlist;
           const triggerWord = match ? match[0].toLowerCase() : '';
           
-          const allowed = allowlist.some(rule => {
-            if (triggerWord.includes(rule.trigger.toLowerCase())) {
-              // Check if required legal keywords are present
-              return rule.requires.some(keyword => 
-                text.toLowerCase().includes(keyword.toLowerCase())
-              );
-            }
-            return false;
-          });
+       // Inside the contextual allowlist check in _validateInputs:
+        const allowed = allowlist.some(rule => {
+       // Check if this pattern's capability matches the rule's trigger
+        const triggerMatch = 
+        triggerWord.includes(rule.trigger.toLowerCase()) || 
+        capability.toLowerCase().includes(rule.trigger.toLowerCase()); // ← Handle capability-level triggers
+  
+  if (triggerMatch) {
+    // Check if required legal keywords are present
+    return rule.requires.some(keyword => 
+      text.toLowerCase().includes(keyword.toLowerCase())
+    );
+  }
+  return false;
+});
           
           if (allowed) {
             // ✅ AUDIT LOG: Contextual allowlist bypass
