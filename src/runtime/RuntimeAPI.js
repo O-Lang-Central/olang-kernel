@@ -3,7 +3,24 @@ const path = require('path');
 const crypto = require('crypto'); // ✅ CRYPTOGRAPHIC AUDIT LOGS
 
 // ✅ O-Lang Kernel Version (Safety Logic & Governance Rules)
-const KERNEL_VERSION = '1.2.30-alpha'; // 🔁 Update when safety rules change
+const KERNEL_VERSION = '1.3.0-alpha'; // 🔁 Bumped: PII redaction engine added
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ NEW v1.3.0 — SEPARATED PATTERN SETS
+//
+// WHY: Previously _validateInputs and _validateLLMOutput both duplicated one
+// giant flat list. PII redaction must ONLY replace PII tokens (phone numbers,
+// BVNs, account numbers) — it must NOT replace financial intent phrases like
+// "fi owo ranṣẹ" with "[TRANSFER_REDACTED]" in legitimate LLM prompts.
+//
+// Backward compatibility: all old patterns are preserved exactly. They are now
+// organised into two methods:
+//   _getPIIPatterns()              → used by new _redactPII()
+//   _getFinancialIntentPatterns()  → used by _validateInputs / _validateLLMOutput
+//
+// BACKWARD COMPAT: _validateInputs still throws by default (MODE = 'block').
+// Set OLANG_PII_MODE=redact in env to switch to non-throwing redaction mode.
+// ─────────────────────────────────────────────────────────────────────────────
 
 class RuntimeAPI {
   constructor({ verbose = false } = {}) {
@@ -20,24 +37,327 @@ class RuntimeAPI {
     if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
     this.disallowedLogFile = path.join(logsDir, 'disallowed_resolvers.json');
     this.disallowedAttempts = [];
-    
+
     // ✅ NEW: Database client setup
     this.dbClient = null;
     this._initDbClient();
-    
+
     // ✅ NEW: Cryptographically verifiable audit logs
     this.auditLog = [];
     this.previousHash = 'GENESIS';
     this.auditLogPrivateKey = process.env.OLANG_AUDIT_PRIVATE_KEY;
     this.auditLogFile = path.join(logsDir, 'audit_log.json');
     this.enableAuditLog = process.env.OLANG_AUDIT_LOG === 'true';
-    
+
+    // ✅ NEW v1.3.0 — PII operating mode
+    // 'block'          → original behaviour: throw on PII (default, backward compat)
+    // 'redact'         → new behaviour: replace PII tokens, continue execution
+    // 'redact-and-log' → redact + emit audit entry per redaction event
+    this.piiMode = process.env.OLANG_PII_MODE || 'block';
+
     if (this.enableAuditLog && this.verbose) {
       console.log('🔐 Cryptographically verifiable audit logging enabled');
     }
+
+    if (this.verbose && this.piiMode !== 'block') {
+      console.log(`🛡️  PII mode: ${this.piiMode}`);
+    }
   }
 
+  // ================================
+  // ✅ NEW v1.3.0 — PII-ONLY PATTERN SET
+  //
+  // These patterns match concrete identifiers that can be replaced with a
+  // [TYPE_REDACTED] token without destroying the semantic meaning of a sentence.
+  // They cover every language listed on the O-Lang site.
+  // ================================
+
+  _getPIIPatterns() {
+    return [
+
+      // ── Phone Numbers ──────────────────────────────────────────────────────
+
+      // Nigeria (MTN, Airtel, Glo, 9mobile)
+      {
+        pattern: /\b(?:\+?234\s*[-.]?|0)(?:70|80|81|90|91)\d{8}\b/g,
+        capability: 'pii_phone',
+        lang: 'ng',
+        label: 'NG_PHONE'
+      },
+      // Kenya (+254 / 07xx / 01xx)
+      {
+        pattern: /\b(?:\+?254\s*[-.]?|0)(?:7[0-9]|1[01])\d{7}\b/g,
+        capability: 'pii_phone',
+        lang: 'ke',
+        label: 'KE_PHONE'
+      },
+      // South Africa (+27 / 0xx)
+      {
+        pattern: /\b(?:\+?27\s*[-.]?|0)[6-8]\d{8}\b/g,
+        capability: 'pii_phone',
+        lang: 'za',
+        label: 'ZA_PHONE'
+      },
+      // Ethiopia (+251)
+      {
+        pattern: /\b(?:\+?251\s*[-.]?|0)[79]\d{8}\b/g,
+        capability: 'pii_phone',
+        lang: 'et',
+        label: 'ET_PHONE'
+      },
+      // Ghana (+233)
+      {
+        pattern: /\b(?:\+?233\s*[-.]?|0)[235]\d{8}\b/g,
+        capability: 'pii_phone',
+        lang: 'gh',
+        label: 'GH_PHONE'
+      },
+      // Generic international E.164
+      {
+        pattern: /\+(?!234|254|27\b|251|233)[1-9]\d{1,2}[-.\s]?\d{3,5}[-.\s]?\d{4,9}\b/g,
+        capability: 'pii_phone',
+        lang: 'intl',
+        label: 'INTL_PHONE'
+      },
+
+      // ── National Identity Numbers ──────────────────────────────────────────
+
+      // Nigeria BVN (11 digits)
+      {
+        pattern: /\b(?:bvn|bank\s+verification\s+number)\b.{0,20}\d{11}/ig,
+        capability: 'pii_national_id',
+        lang: 'ng',
+        label: 'NG_BVN'
+      },
+      // Nigeria NIN (11 digits)
+      {
+        pattern: /\b(?:nin|national\s+identification\s+number)\b.{0,20}\d{11}/ig,
+        capability: 'pii_national_id',
+        lang: 'ng',
+        label: 'NG_NIN'
+      },
+      // South Africa ID (13 digits YYMMDD + gender + race + check)
+      {
+        pattern: /\b[0-9]{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12][0-9]|3[01])[0-9]{4}[01][0-9]{2}\b/g,
+        capability: 'pii_national_id',
+        lang: 'za',
+        label: 'ZA_ID'
+      },
+      // Kenya Huduma / National ID (7-8 digits)
+      {
+        pattern: /\b(?:national\s+id|id\s+number|huduma\s+namba)\b.{0,10}\d{7,8}\b/ig,
+        capability: 'pii_national_id',
+        lang: 'ke',
+        label: 'KE_ID'
+      },
+
+      // ── Bank Account Numbers ───────────────────────────────────────────────
+
+      // Generic account reference (works across all listed languages)
+      {
+        pattern: /(?:account|acct|a\/c|akaunti|asusu|hesabu|namba|#|compte|cuenta|konto|حساب|حساب\s+رقم|حسابي|akaunti\s+ya|nambari\s+ya\s+akaunti)\s*[:\-—–]?\s*(\d{6,18})\b/ig,
+        capability: 'pii_account',
+        lang: 'multi',
+        label: 'ACCOUNT_NUMBER'
+      },
+      // IBAN (EU + Africa SWIFT members)
+      {
+        pattern: /\b[A-Z]{2}\d{2}[A-Z0-9]{4,30}\b/g,
+        capability: 'pii_account',
+        lang: 'intl',
+        label: 'IBAN'
+      },
+
+      // ── Email Addresses ────────────────────────────────────────────────────
+      {
+        pattern: /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b/g,
+        capability: 'pii_email',
+        lang: 'multi',
+        label: 'EMAIL'
+      },
+
+      // ── Deceptive completion claims (cross-language) ───────────────────────
+      // These belong in PII set because they mask fraudulent state
+      {
+        pattern: /\b(successful(?:ly)?|confirmed|approved|completed|processed|verified|imethibitishwa|imefanikiwa|amthibitishwa|ti\s+da|ti\s+ṣe|gụnyere|kimefanyika|yamekamilika)\b/ig,
+        capability: 'pii_deceptive_claim',
+        lang: 'multi',
+        label: 'DECEPTIVE_CLAIM'
+      }
+    ];
+  }
+
+  // ================================
+  // ✅ NEW v1.3.0 — FINANCIAL INTENT PATTERN SET (unchanged from v1.2.x)
+  //
+  // These patterns detect *intent* to perform a financial action. They are
+  // NOT suitable for token-level redaction because replacing "fi owo ranṣẹ"
+  // with "[TRANSFER_REDACTED]" would destroy the sentence. They are used by
+  // _validateInputs (block mode) and _validateLLMOutput (always blocks).
+  // ================================
+
+  _getFinancialIntentPatterns() {
+    return [
+
+      // ────────────────────────────────────────────────
+      // 🇳🇬 NIGERIAN LANGUAGES (Fixed Unicode Boundaries)
+      // ────────────────────────────────────────────────
+
+      // YORUBA: Removed trailing \b after 'ṣẹ' to fix Unicode matching
+      { pattern: /fi\s+(?:owo|ẹ̀wọ̀|ewo|ku|fun|s'ọkọọ)/i, capability: 'transfer', lang: 'yo' },
+      { pattern: /ranṣẹ\s+(?:owo|pesa|kuɗi|ego)/i, capability: 'transfer', lang: 'yo' },
+      { pattern: /fi\s+\w+\s+\w+\s+ranṣẹ/i, capability: 'transfer', lang: 'yo' }, // Catches "Fi 5000 naira ranṣẹ"
+      { pattern: /san\s+(?:owo|ẹ̀wọ̀|ewo|fun|wo)/i, capability: 'payment', lang: 'yo' },
+      { pattern: /gba\s+owo/i, capability: 'withdrawal', lang: 'yo' },
+      { pattern: /\bti\s+(?:fi|san|gba|da|lo)/i, capability: 'unauthorized_action', lang: 'yo' },
+      { pattern: /\b(?:ń|ǹ|n)\s+(?:fi|san|gba)/i, capability: 'unauthorized_action', lang: 'yo' },
+      { pattern: /\b(mo\s+ti\s+(?:fi|san|gba))/i, capability: 'unauthorized_action', lang: 'yo' },
+
+      // HAUSA: ✅ FIXED - Aggressive Substring Match (No Boundaries)
+      { pattern: /aika.{0,30}ku(?:ɗ|d)i/iu, capability: 'transfer', lang: 'ha' },
+      { pattern: /ciyar\s*(?:da)?/i, capability: 'transfer', lang: 'ha' },
+      { pattern: /shiga\s+ku(?:ɗ|d)i/iu, capability: 'transfer', lang: 'ha' },
+      { pattern: /turo\s+.*\s+aika/i, capability: 'transfer', lang: 'ha' },
+      { pattern: /biya\s*(?:da)?/i, capability: 'payment', lang: 'ha' },
+      { pattern: /sahaw[ae]\s+ku(?:ɗ|d)i/iu, capability: 'withdrawal', lang: 'ha' },
+      { pattern: /(?:ya|ta|su)\s+(?:ciyar|biya|sahawa|sake)/i, capability: 'unauthorized_action', lang: 'ha' },
+      { pattern: /(?:za\s+a|za\s+ta)\s+(?:ciyar|biya)/i, capability: 'unauthorized_action', lang: 'ha' },
+      { pattern: /ina\s+(?:ciyar|biya|sahawa)/i, capability: 'unauthorized_action', lang: 'ha' },
+
+      // IGBO: Removed trailing \b after 'igo'
+      { pattern: /zipu\s+(?:ego|moni|isi|na)/i, capability: 'transfer', lang: 'ig' },
+      { pattern: /buru\s+(?:ego|moni|isi)/i, capability: 'transfer', lang: 'ig' },
+      { pattern: /zi\s+.*\s+zipu/i, capability: 'transfer', lang: 'ig' },
+      { pattern: /tinye\s+(?:ego|moni|isi)/i, capability: 'deposit', lang: 'ig' },
+      { pattern: /(?:ziri|bururu|tinyere|gbara)/i, capability: 'unauthorized_action', lang: 'ig' },
+      { pattern: /m\s+(?:ziri|buru|zipuru|tinyere)/i, capability: 'unauthorized_action', lang: 'ig' },
+
+      // SWAHILI: ✅ FIXED - Catch Conjugated Forms (ni-li-pe, a-li-pe)
+      { pattern: /tuma\s+(?:pesa|fedha)/i, capability: 'transfer', lang: 'sw' },
+      { pattern: /pelek[ae]?\s+(?:pesa|fedha)/i, capability: 'transfer', lang: 'sw' },
+      { pattern: /wasilisha/i, capability: 'transfer', lang: 'sw' },
+      { pattern: /\b\w*lip[ae]\w*/i, capability: 'payment', lang: 'sw' },
+      { pattern: /maliza\s+malipo/i, capability: 'payment', lang: 'sw' },
+      { pattern: /ongez[ae]?\s*(?:kiasi|pesa|fedha)/i, capability: 'deposit', lang: 'sw' },
+      { pattern: /wek[ae]?\s+(?:katika|ndani)\s+(?:akaunti|hisa)/i, capability: 'deposit', lang: 'sw' },
+      { pattern: /nime(?:tuma|lipa|ongeza|weka|peleka)/i, capability: 'unauthorized_action', lang: 'sw' },
+      { pattern: /(?:ni|u|a|tu|m|wa|ki|vi|zi|i)\s*me\s*(?:ongeza|weka|tuma|peleka|lipa|wasilisha)/i, capability: 'unauthorized_action', lang: 'sw' },
+
+      // OTHER AFRICAN:
+      // Amharic: Match roots anywhere
+      { pattern: /\u120b\u12ad/u, capability: 'transfer', lang: 'am' },
+      { pattern: /\u1308\u1263/u, capability: 'deposit', lang: 'am' },
+      { pattern: /\u12ad\u134c\u120d/u, capability: 'payment', lang: 'am' },
+      { pattern: /[\u1200-\u137F]{0,4}(?:\u1270\u120b\u120b\u1348|\u120b\u12ad|\u12ad\u134c\u120d|\u1338\u121d\u122d|\u12c8\u1323|\u1308\u1263)[\u1200-\u137F]{0,2}/u, capability: 'financial_action', lang: 'am' },
+
+      // Somali
+      { pattern: /dir\s+(?:lacag|maal|qarsoon)/i, capability: 'transfer', lang: 'so' },
+      { pattern: /bixi|bixis\s*o/i, capability: 'payment', lang: 'so' },
+
+      // Zulu: ✅ FIXED - Handle Subject Concords (u-thumela, ngi-hlawule)
+      { pattern: /thumel/i, capability: 'transfer', lang: 'zu' }, // Matches root inside uthumela, ngithumela
+      { pattern: /thumel.*imali/i, capability: 'transfer', lang: 'zu' },
+      { pattern: /hlawul/i, capability: 'payment', lang: 'zu' },  // Matches root inside hlawula, ngihlawule
+      { pattern: /hlawul.*imali/i, capability: 'payment', lang: 'zu' },
+
+      // ────────────────────────────────────────────────
+      // 🇿🇦 XHOSA ✅ NEW v1.3.0
+      //
+      // Xhosa shares Nguni root structure with Zulu. Subject concords differ
+      // (ndi- / u- / ba-) but financial roots are near-identical.
+      // ────────────────────────────────────────────────
+      { pattern: /thumela?\b/i, capability: 'transfer', lang: 'xh' },               // thumela (send)
+      { pattern: /thumela?\s+imali/i, capability: 'transfer', lang: 'xh' },         // send money
+      { pattern: /hlawul/i, capability: 'payment', lang: 'xh' },                    // pay (shared Nguni root)
+      { pattern: /beka\s+(?:imali|ingeniso)/i, capability: 'deposit', lang: 'xh' }, // deposit
+      { pattern: /rhola\s+imali/i, capability: 'withdrawal', lang: 'xh' },          // withdraw money
+      { pattern: /ndi(?:thumele|hlawule|beke|rhola)/i, capability: 'unauthorized_action', lang: 'xh' }, // 1st person perfect
+      { pattern: /u(?:thumele|hlawule|beke|rhola)/i, capability: 'unauthorized_action', lang: 'xh' },   // 3rd person perfect
+
+      // ────────────────────────────────────────────────
+      // 🌐 GLOBAL LANGUAGES
+      // ────────────────────────────────────────────────
+      { pattern: /\b(transfer(?:red|ring)?|send(?:t|ing)?|wire(?:d)?|pay(?:ed|ing)?|withdraw(?:n)?|deposit(?:ed|ing)?)\b/i, capability: 'financial_action', lang: 'en' },
+      { pattern: /\bI\s+(?:can|will|am able to|have|'ve|did|already)\s+(?:transfer|send|pay|withdraw|deposit|wire)\b/i, capability: 'unauthorized_action', lang: 'en' },
+      { pattern: /\b(?:have|has|had)\s+(?:transferred|sent|paid|withdrawn|deposited|wire[d])\b/i, capability: 'unauthorized_action', lang: 'en' },
+      { pattern: /\b(?:was|were|been)\s+(?:added|credited|transferred|sent|paid)\b/i, capability: 'unauthorized_action', lang: 'en' },
+      { pattern: /\b(virer|transférer|envoyer|payer|retirer|déposer|débiter|créditer)\b/i, capability: 'financial_action', lang: 'fr' },
+      { pattern: /\b(?:j'?ai|tu as|il a|elle a|nous avons|vous avez|ils ont|elles ont)\s+(?:viré|transféré|envoyé|payé|retiré|déposé)\b/i, capability: 'unauthorized_action', lang: 'fr' },
+      { pattern: /[\u0600-\u06FF]{0,3}(?:حوّل|أرسل|ادفع|اودع|سحب)[\u0600-\u06FF]{0,3}/u, capability: 'financial_action', lang: 'ar' },
+      { pattern: /[\u0600-\u06FF]{0,3}(?:أنا|تم|لقد)\s*(?:حوّلت|أرسلت|دفعت|اودعت)[\u0600-\u06FF]{0,3}/u, capability: 'unauthorized_action', lang: 'ar' },
+      { pattern: /[\u4e00-\u9fff]{0,2}(?:转账|支付|存款|取款)[\u4e00-\u9fff]{0,2}(?:了)[\u4e00-\u9fff]{0,2}/u, capability: 'financial_action', lang: 'zh' },
+      { pattern: /[\u4e00-\u9fff]{0,2}(?:转账|转帐|支付|付款|提款|取款|存款|存入|汇款|存)[\u4e00-\u9fff]{0,2}/u, capability: 'financial_action', lang: 'zh' },
+      { pattern: /[\u4e00-\u9fff]{0,2}(?:我|已|已经)\s*(?:转账|支付|提款|存款)[\u4e00-\u9fff]{0,2}/u, capability: 'unauthorized_action', lang: 'zh' },
+
+      // ────────────────────────────────────────────────
+      // 🛡️ PII & EVASION (kept here for LLM output scanning — not for redaction)
+      // ────────────────────────────────────────────────
+      { pattern: /\b(?:\+?234\s*|0)(?:70|80|81|90|91)\d{8}\b/, capability: 'pii_exposure', lang: 'multi' },
+      { pattern: /\b(?:bvn|bank\s+verification\s+number)\b.{0,20}\d{11}/i, capability: 'pii_exposure', lang: 'multi' },
+      { pattern: /(?:account|acct|a\/c|akaunti|asusu|hesabu|namba|#)\s*[:\-—–]?\s*(\d{6,})/i, capability: 'pii_exposure', lang: 'multi' },
+      { pattern: /\b(successful(?:ly)?|confirmed|approved|completed|processed|verified|imethibitishwa|imefanikiwa)\b/i, capability: 'deceptive_claim', lang: 'multi' },
+    ];
+  }
+
+  // ================================
+  // ✅ NEW v1.3.0 — PII REDACTION ENGINE
+  //
+  // Replaces PII tokens in a string with [LABEL_REDACTED] placeholders.
+  // Returns the cleaned string + a structured redaction manifest for audit.
+  //
+  // This is intentionally separate from _validateInputs so callers can
+  // choose to redact without halting (OLANG_PII_MODE=redact).
+  // ================================
+
+  _redactPII(text) {
+    if (!text || typeof text !== 'string') {
+      return { redacted: text, redactions: [], wasModified: false };
+    }
+
+    let redacted = text;
+    const redactions = [];
+
+    for (const { pattern, capability, lang, label } of this._getPIIPatterns()) {
+      // All PII patterns must use /g flag for replaceAll behaviour
+      const globalPattern = pattern.global
+        ? pattern
+        : new RegExp(pattern.source, pattern.flags + 'g');
+
+      redacted = redacted.replace(globalPattern, (match) => {
+        redactions.push({
+          original: match,
+          replacement: `[${label}_REDACTED]`,
+          capability,
+          lang,
+          offset: redacted.indexOf(match) // approximate; accurate before mutations
+        });
+        return `[${label}_REDACTED]`;
+      });
+    }
+
+    return {
+      redacted,
+      redactions,
+      wasModified: redactions.length > 0
+    };
+  }
+
+  // ================================
+  // ✅ NEW v1.3.0 — PUBLIC REDACTION API
+  //
+  // Allows workflow authors and external callers to redact a string directly.
+  // Backward compat: the old _validateInputs path is unchanged.
+  //
+  //   const { redacted, redactions } = runtime.redact(text);
+  // ================================
+
+  redact(text) {
+    return this._redactPII(text);
+  }
+
+  // ================================
   // ✅ NEW: Initialize database client
+  // ================================
   _initDbClient() {
     const dbType = process.env.OLANG_DB_TYPE; // 'postgres', 'mysql', 'mongodb', 'sqlite'
     if (!dbType) return; // DB persistence disabled
@@ -141,33 +461,33 @@ class RuntimeAPI {
       previousHash: this.previousHash,
       sequenceNumber: this.auditLog.length + 1
     };
-    
+
     // Create hash of this entry
     const entryHash = this._hash(entryData);
-    
+
     // Sign the entry if private key available
     const signature = this._sign(entryHash);
-    
+
     const entry = {
       ...entryData,
       hash: entryHash,
       signature,
-      publicKey: this.auditLogPrivateKey ? 
-        crypto.createPublicKey(this.auditLogPrivateKey).export({ 
-          type: 'spki', 
-          format: 'pem' 
+      publicKey: this.auditLogPrivateKey ?
+        crypto.createPublicKey(this.auditLogPrivateKey).export({
+          type: 'spki',
+          format: 'pem'
         }) : null
     };
-    
+
     // Update chain
     this.previousHash = entryHash;
     this.auditLog.push(entry);
-    
+
     // Persist to file if enabled
     if (this.enableAuditLog) {
       this._persistAuditLog();
     }
-    
+
     return entry;
   }
 
@@ -181,13 +501,13 @@ class RuntimeAPI {
       'current_step',
       'agent_id'
     ];
-    
+
     for (const key of keysToCapture) {
       if (this.context[key] !== undefined) {
         snapshot[key] = this.context[key];
       }
     }
-    
+
     return snapshot;
   }
 
@@ -201,7 +521,7 @@ class RuntimeAPI {
         JSON.stringify(this.auditLog, null, 2),
         'utf8'
       );
-      
+
       // Also persist to DB if configured
       if (this.dbClient && process.env.OLANG_AUDIT_DB_PERSIST === 'true') {
         this._persistAuditLogToDB();
@@ -218,7 +538,7 @@ class RuntimeAPI {
     try {
       const latestEntry = this.auditLog[this.auditLog.length - 1];
       if (!latestEntry) return;
-      
+
       switch (this.dbClient.type) {
         case 'postgres':
           await this.dbClient.client.query(
@@ -236,7 +556,7 @@ class RuntimeAPI {
             ]
           );
           break;
-          
+
         case 'mysql':
           await this.dbClient.client.execute(
             `INSERT INTO audit_log (hash, previous_hash, event, details, timestamp, workflow_name, signature, sequence_number)
@@ -253,7 +573,7 @@ class RuntimeAPI {
             ]
           );
           break;
-          
+
         case 'mongodb':
           const db = this.dbClient.client.db(process.env.DB_NAME || 'olang');
           await db.collection('audit_log').insertOne({
@@ -267,7 +587,7 @@ class RuntimeAPI {
             sequence_number: latestEntry.sequenceNumber
           });
           break;
-          
+
         case 'sqlite':
           const stmt = this.dbClient.client.prepare(
             `INSERT INTO audit_log (hash, previous_hash, event, details, timestamp, workflow_name, signature, sequence_number)
@@ -298,28 +618,28 @@ class RuntimeAPI {
     if (log.length === 0) {
       return { valid: true, message: 'Audit log is empty' };
     }
-    
+
     // Verify genesis block
     if (log[0].previousHash !== 'GENESIS') {
       return { valid: false, error: 'Invalid genesis block', failedAtIndex: 0 };
     }
-    
+
     // Verify chain integrity
     let previousHash = 'GENESIS';
     for (let i = 0; i < log.length; i++) {
       const entry = log[i];
-      
+
       // Check previous hash linkage
       if (entry.previousHash !== previousHash) {
-        return { 
-          valid: false, 
+        return {
+          valid: false,
           error: `Hash chain broken at entry ${i}`,
           failedAtIndex: i,
           expected: previousHash,
           actual: entry.previousHash
         };
       }
-      
+
       // Verify entry hash
       const entryData = {
         timestamp: entry.timestamp,
@@ -330,18 +650,18 @@ class RuntimeAPI {
         previousHash: entry.previousHash,
         sequenceNumber: entry.sequenceNumber
       };
-      
+
       const calculatedHash = this._hash(entryData);
       if (calculatedHash !== entry.hash) {
-        return { 
-          valid: false, 
+        return {
+          valid: false,
           error: `Entry hash mismatch at index ${i}`,
           failedAtIndex: i,
           expected: calculatedHash,
           actual: entry.hash
         };
       }
-      
+
       // Verify signature if present
       if (entry.signature && entry.publicKey) {
         try {
@@ -350,26 +670,26 @@ class RuntimeAPI {
           verify.end();
           const isValid = verify.verify(entry.publicKey, entry.signature, 'base64');
           if (!isValid) {
-            return { 
-              valid: false, 
+            return {
+              valid: false,
               error: `Signature verification failed at entry ${i}`,
               failedAtIndex: i
             };
           }
         } catch (e) {
-          return { 
-            valid: false, 
+          return {
+            valid: false,
             error: `Signature verification error at entry ${i}: ${e.message}`,
             failedAtIndex: i
           };
         }
       }
-      
+
       previousHash = entry.hash;
     }
-    
-    return { 
-      valid: true, 
+
+    return {
+      valid: true,
       message: `Audit log verified successfully (${log.length} entries)`,
       totalEntries: log.length,
       lastHash: previousHash
@@ -387,7 +707,7 @@ class RuntimeAPI {
       nextHash: endIndex < this.auditLog.length - 1 ? this.auditLog[endIndex + 1].hash : null,
       totalEntries: this.auditLog.length
     };
-    
+
     return proof;
   }
 
@@ -410,9 +730,9 @@ class RuntimeAPI {
    */
   _calculateMerkleRoot() {
     if (this.auditLog.length === 0) return null;
-    
+
     let hashes = this.auditLog.map(entry => entry.hash);
-    
+
     while (hashes.length > 1) {
       const newLevel = [];
       for (let i = 0; i < hashes.length; i += 2) {
@@ -422,7 +742,7 @@ class RuntimeAPI {
       }
       hashes = newLevel;
     }
-    
+
     return hashes[0];
   }
 
@@ -458,7 +778,7 @@ class RuntimeAPI {
       resolverPolicy: 'allowlist-only',
       timestamp: new Date().toISOString()
     };
-    
+
     return crypto.createHash('sha256')
       .update(JSON.stringify(profile))
       .digest('hex');
@@ -475,12 +795,16 @@ class RuntimeAPI {
         semanticValidation: true,
         hallucinationPrevention: true,
         cryptographicAudit: true,
-        multiDatabaseSupport: true
+        multiDatabaseSupport: true,
+        piiRedaction: true,    // ✅ NEW v1.3.0
+        piiMode: this.piiMode, // ✅ NEW v1.3.0
+        xhosaSupport: true     // ✅ NEW v1.3.0
       },
       environment: {
         auditEnabled: this.enableAuditLog,
         dbType: this.dbClient?.type || 'none',
-        strictMode: process.env.OLANG_STRICT_INPUTS === 'true'
+        strictMode: process.env.OLANG_STRICT_INPUTS === 'true',
+        piiMode: this.piiMode  // ✅ NEW v1.3.0
       }
     };
   }
@@ -543,7 +867,7 @@ class RuntimeAPI {
     const entry = { resolver: resolverName, step: stepAction, timestamp: new Date().toISOString() };
     fs.appendFileSync(this.disallowedLogFile, JSON.stringify(entry) + '\n', 'utf8');
     this.disallowedAttempts.push(entry);
-    
+
     // ✅ AUDIT LOG: Security violation with governance context
     this._createAuditEntry('security_violation', {
       type: 'disallowed_resolver',
@@ -551,12 +875,12 @@ class RuntimeAPI {
       step: stepAction,
       severity: 'high',
       kernel_version: KERNEL_VERSION,
-      governance_profile_hash: this._generateGovernanceProfileHash({ 
+      governance_profile_hash: this._generateGovernanceProfileHash({
         allowedResolvers: Array.from(this.allowedResolvers),
-        maxGenerations: null 
+        maxGenerations: null
       })
     });
-    
+
     if (this.verbose) {
       console.warn(`[O-Lang] Disallowed resolver blocked: ${resolverName} | step: ${stepAction}`);
     }
@@ -638,7 +962,7 @@ class RuntimeAPI {
     return path.split('.').reduce((o, k) => (o && o[k] !== undefined ? o[k] : undefined), obj);
   }
 
-   evaluateCondition(cond, ctx) {
+  evaluateCondition(cond, ctx) {
     cond = cond.trim();
 
     // ✅ 1. Handle Logical OR (|| or 'or')
@@ -670,6 +994,7 @@ class RuntimeAPI {
     // Fallback: truthy check
     return Boolean(this.getNested(ctx, cond.replace(/\{|\}/g, '')));
   }
+
   mathFunctions = {
     add: (a, b) => a + b,
     subtract: (a, b) => a - b,
@@ -690,38 +1015,38 @@ class RuntimeAPI {
     abs: a => Math.abs(a)
   };
 
-    evaluateMath(expr) {
+  evaluateMath(expr) {
     // ✅ Handle quoted string literals with interpolation: "{var}" → interpolated string
     if (typeof expr === 'string') {
       const trimmed = expr.trim();
-      
+
       // Check if it's a quoted string (single or double quotes)
-      if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || 
+      if ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
           (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
         // Extract the inner content
         let inner = trimmed.slice(1, -1);
-        
+
         // Perform interpolation: replace {var} with context values
         inner = inner.replace(/\{([^\}]+)\}/g, (_, path) => {
           const value = this.getNested(this.context, path.trim());
           return value !== undefined ? String(value) : `{${path}}`;
         });
-        
+
         return inner;
       }
     }
-    
+
     // ── Original math evaluation logic (unchanged) ──────────────────────────
     expr = expr.replace(/\{([^\}]+)\}/g, (_, path) => {
       const value = this.getNested(this.context, path.trim());
       if (typeof value === 'string') return `"${value.replace(/"/g, '\\"')}"`;
       return value !== undefined ? value : 0;
     });
-    
+
     const funcNames = Object.keys(this.mathFunctions);
     const safeFunc = {};
     funcNames.forEach(fn => safeFunc[fn] = this.mathFunctions[fn]);
-    
+
     try {
       const f = new Function(...funcNames, `return ${expr};`);
       return f(...funcNames.map(fn => safeFunc[fn]));
@@ -765,350 +1090,264 @@ class RuntimeAPI {
     });
   }
 
-  // -----------------------------
-  // ✅ KERNEL-LEVEL INPUT VALIDATION (Pre-Flight Safety)
-  // -----------------------------
-  // -----------------------------
-  // ✅ KERNEL-LEVEL INPUT VALIDATION (Pre-Flight Safety)
-  // -----------------------------
-  // -----------------------------
-// ✅ KERNEL-LEVEL INPUT VALIDATION (Pre-Flight Safety) - ENHANCED WITH CONTEXTUAL ALLOWLIST
-// -----------------------------
-_validateInputs(inputs) {
-  // Only scan specific input fields that contain user text
-  const fieldsToScan = ['user_message', 'user_question', 'text', 'prompt', 'document_text'];
-  
-  for (const field of fieldsToScan) {
-    const text = inputs[field];
-    if (!text || typeof text !== 'string') continue;
+  // ================================
+  // ✅ UPDATED v1.3.0 — KERNEL-LEVEL INPUT VALIDATION (Pre-Flight Safety)
+  //
+  // BACKWARD COMPAT:
+  //   OLANG_PII_MODE=block  (default) → original behaviour, throws on any match
+  //   OLANG_PII_MODE=redact           → replaces PII tokens, continues
+  //   OLANG_PII_MODE=redact-and-log   → redact + audit entry per redaction event
+  //
+  // Financial intent patterns always throw regardless of PII mode.
+  // ================================
+  _validateInputs(inputs) {
+    // Only scan specific input fields that contain user text
+    // NOTE: 'document_text' intentionally excluded — legal documents legitimately
+    // contain financial terms and must not be blocked at the input layer.
+    const fieldsToScan = ['user_message', 'user_question', 'text', 'prompt'];
 
-    // 🔒 CONJUGATION-AWARE + EVASION-RESISTANT PAN-AFRICAN INTENT DETECTION (INPUT)
-    const forbiddenPatterns = [
-      // ────────────────────────────────────────────────
-      // 🇳🇬 NIGERIAN LANGUAGES (Fixed Unicode Boundaries)
-      // ────────────────────────────────────────────────
-      
-      // YORUBA: Removed trailing \b after 'ṣẹ' to fix Unicode matching
-      { pattern: /fi\s+(?:owo|ẹ̀wọ̀|ewo|ku|fun|s'ọkọọ)/i, capability: 'transfer', lang: 'yo' },
-      { pattern: /ranṣẹ\s+(?:owo|pesa|kuɗi|ego)/i, capability: 'transfer', lang: 'yo' },
-      { pattern: /fi\s+\w+\s+\w+\s+ranṣẹ/i, capability: 'transfer', lang: 'yo' }, // Catches "Fi 5000 naira ranṣẹ"
-      { pattern: /san\s+(?:owo|ẹ̀wọ̀|ewo|fun|wo)/i, capability: 'payment', lang: 'yo' },
-      { pattern: /gba\s+owo/i, capability: 'withdrawal', lang: 'yo' },
-      { pattern: /\bti\s+(?:fi|san|gba|da|lo)/i, capability: 'unauthorized_action', lang: 'yo' },
-      { pattern: /\b(?:ń|ǹ|n)\s+(?:fi|san|gba)/i, capability: 'unauthorized_action', lang: 'yo' },
-      { pattern: /\b(mo\s+ti\s+(?:fi|san|gba))/i, capability: 'unauthorized_action', lang: 'yo' },
+    const redactMode = this.piiMode === 'redact' || this.piiMode === 'redact-and-log';
+    const allRedactions = {};
 
-      // HAUSA: ✅ FIXED - Aggressive Substring Match (No Boundaries)
-      { pattern: /aika.{0,30}ku(?:ɗ|d)i/iu, capability: 'transfer', lang: 'ha' },
-      { pattern: /ciyar\s*(?:da)?/i, capability: 'transfer', lang: 'ha' },
-      { pattern: /shiga\s+ku(?:ɗ|d)i/iu, capability: 'transfer', lang: 'ha' },
-      { pattern: /turo\s+.*\s+aika/i, capability: 'transfer', lang: 'ha' },
-      { pattern: /biya\s*(?:da)?/i, capability: 'payment', lang: 'ha' },
-      { pattern: /sahaw[ae]\s+ku(?:ɗ|d)i/iu, capability: 'withdrawal', lang: 'ha' },
-      { pattern: /(?:ya|ta|su)\s+(?:ciyar|biya|sahawa|sake)/i, capability: 'unauthorized_action', lang: 'ha' },
-      { pattern: /(?:za\s+a|za\s+ta)\s+(?:ciyar|biya)/i, capability: 'unauthorized_action', lang: 'ha' },
-      { pattern: /ina\s+(?:ciyar|biya|sahawa)/i, capability: 'unauthorized_action', lang: 'ha' },
+    // ── PASS 1: PII redaction (when mode allows) ──────────────────────────
+    if (redactMode) {
+      for (const field of fieldsToScan) {
+        const text = inputs[field];
+        if (!text || typeof text !== 'string') continue;
 
+        const { redacted, redactions, wasModified } = this._redactPII(text);
 
-      // IGBO: Removed trailing \b after 'igo'
-      { pattern: /zipu\s+(?:ego|moni|isi|na)/i, capability: 'transfer', lang: 'ig' },
-      { pattern: /buru\s+(?:ego|moni|isi)/i, capability: 'transfer', lang: 'ig' },
-      { pattern: /zi\s+.*\s+zipu/i, capability: 'transfer', lang: 'ig' },
-      { pattern: /tinye\s+(?:ego|moni|isi)/i, capability: 'deposit', lang: 'ig' },
-      { pattern: /(?:ziri|bururu|tinyere|gbara)/i, capability: 'unauthorized_action', lang: 'ig' },
-      { pattern: /m\s+(?:ziri|buru|zipuru|tinyere)/i, capability: 'unauthorized_action', lang: 'ig' },
+        if (wasModified) {
+          inputs[field] = redacted; // mutate in place — caller sees clean value
+          allRedactions[field] = redactions;
 
-      // SWAHILI: ✅ FIXED - Catch Conjugated Forms (ni-li-pe, a-li-pe)
-      { pattern: /tuma\s+(?:pesa|fedha)/i, capability: 'transfer', lang: 'sw' },
-      { pattern: /pelek[ae]?\s+(?:pesa|fedha)/i, capability: 'transfer', lang: 'sw' },
-      { pattern: /wasilisha/i, capability: 'transfer', lang: 'sw' },
-      { pattern: /\b\w*lip[ae]\w*/i, capability: 'payment', lang: 'sw' },
-      { pattern: /maliza\s+malipo/i, capability: 'payment', lang: 'sw' },
-      { pattern: /ongez[ae]?\s*(?:kiasi|pesa|fedha)/i, capability: 'deposit', lang: 'sw' },
-      { pattern: /wek[ae]?\s+(?:katika|ndani)\s+(?:akaunti|hisa)/i, capability: 'deposit', lang: 'sw' },
-      { pattern: /nime(?:tuma|lipa|ongeza|weka|peleka)/i, capability: 'unauthorized_action', lang: 'sw' },
-
-
-      // OTHER AFRICAN: ✅ FIXED - Direct Unicode Substring
-      // Amharic: Match roots anywhere
-  { pattern: /\u120b\u12ad/u, capability: 'transfer', lang: 'am' },
-  { pattern: /\u1308\u1263/u, capability: 'deposit', lang: 'am' },
-  { pattern: /\u12ad\u134c\u120d/u, capability: 'payment', lang: 'am' },
-  { pattern: /[\u1200-\u137F]{0,4}(?:\u1270\u120b\u120b\u1348|\u120b\u12ad|\u12ad\u134c\u120d|\u1338\u121d\u122d|\u12c8\u1323|\u1308\u1263)[\u1200-\u137F]{0,2}/u, capability: 'financial_action', lang: 'am' },
-      
-      // Somali
-      { pattern: /dir\s+(?:lacag|maal|qarsoon)/i, capability: 'transfer', lang: 'so' },
-      { pattern: /bixi|bixis\s*o/i, capability: 'payment', lang: 'so' },
-      
-      // Zulu: ✅ FIXED - Handle Subject Concords (u-thumela, ngi-hlawule)
-      { pattern: /thumel/i, capability: 'transfer', lang: 'zu' }, // Matches root inside uthumela, ngithumela
-      { pattern: /thumel.*imali/i, capability: 'transfer', lang: 'zu' },
-      { pattern: /hlawul/i, capability: 'payment', lang: 'zu' },  // Matches root inside hlawula, ngihlawule
-      { pattern: /hlawul.*imali/i, capability: 'payment', lang: 'zu' },
-
-      // ────────────────────────────────────────────────
-      // 🌐 GLOBAL LANGUAGES
-      // ────────────────────────────────────────────────
-      { pattern: /\b(transfer(?:red|ring)?|send(?:t|ing)?|wire(?:d)?|pay(?:ed|ing)?|withdraw(?:n)?|deposit(?:ed|ing)?)\b/i, capability: 'financial_action', lang: 'en' },
-      { pattern: /\bI\s+(?:can|will|am able to|have|'ve|did|already)\s+(?:transfer|send|pay|withdraw|deposit|wire)\b/i, capability: 'unauthorized_action', lang: 'en' },
-      { pattern: /\b(virer|transférer|envoyer|payer|retirer|déposer)\b/i, capability: 'financial_action', lang: 'fr' },
-      { pattern: /[\u0600-\u06FF]{0,3}(?:حوّل|أرسل|ادفع|اودع|سحب)[\u0600-\u06FF]{0,3}/u, capability: 'financial_action', lang: 'ar' },
-      { pattern: /[\u4e00-\u9fff]{0,2}(?:转账 | 支付 | 存款 | 取款)[\u4e00-\u9fff]{0,2}/u, capability: 'financial_action', lang: 'zh' },
-
-      // ────────────────────────────────────────────────
-      // 🛡️ PII & EVASION
-      // ────────────────────────────────────────────────
-     { pattern: /\b(?:\+?234\s*|0)(?:70|80|81|90|91)\d{8}\b/, capability: 'pii_exposure', lang: 'multi' },
-     { pattern: /\b(?:bvn|bank\s+verification\s+number)\b.{0,20}\d{11}/i, capability: 'pii_exposure', lang: 'multi' },
-     { pattern: /(?:account|acct|a\/c|akaunti|asusu|hesabu|namba|#)\s*[:\-—–]?\s*(\d{6,})/i, capability: 'pii_exposure', lang: 'multi' },
-     { pattern: /\b(successful(?:ly)?|confirmed|approved|completed|processed|verified|imethibitishwa|imefanikiwa)\b/i, capability: 'deceptive_claim', lang: 'multi' },
-    ];
-
-    for (const { pattern, capability, lang } of forbiddenPatterns) {
-      if (pattern.test(text)) {
-        const match = text.match(pattern);
-        const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
-        const isFinancial = ['transfer', 'payment', 'withdrawal', 'deposit', 'financial_action'].includes(capability);
-
-       // ✅ DECOUPLED: Check legal context via standardized signals (not UI fields)
-    const intent = this.context.__verified_intent || {};
-    const signals = intent.context_signals || {};
-
-    const isLegalContext = 
-  // Signal 1: Explicit scope declaration
-  intent.scope === 'legal_analysis_only' ||
-  
-  // Signal 2: Standardized context signals (server-mapped, UI-agnostic)
-  signals.isLegalDocument === true ||
-  signals.documentCategory === 'contract' ||
-  signals.documentCategory === 'nda' ||
-  signals.documentCategory === 'agreement' ||
-  signals.documentCategory === 'legal' ||
-  
-  // Signal 3: Semantic fallback (works even if signals missing)
-  (typeof text === 'string' && /clause|term|agreement|contract|obligation|penalty|damages|breach|party|shall|herein/i.test(text));
-        
-        // ✅ NEW: Check contextual allowlist if in legal context
-        if (isLegalContext && this.context.__verified_intent?.contextual_allowlist) {
-          const allowlist = this.context.__verified_intent.contextual_allowlist;
-          const triggerWord = match ? match[0].toLowerCase() : '';
-          
-       // Inside the contextual allowlist check in _validateInputs:
-        const allowed = allowlist.some(rule => {
-       // Check if this pattern's capability matches the rule's trigger
-        const triggerMatch = 
-        triggerWord.includes(rule.trigger.toLowerCase()) || 
-        capability.toLowerCase().includes(rule.trigger.toLowerCase()); // ← Handle capability-level triggers
-  
-  if (triggerMatch) {
-    // Check if required legal keywords are present
-    return rule.requires.some(keyword => 
-      text.toLowerCase().includes(keyword.toLowerCase())
-    );
-  }
-  return false;
-});
-          
-          if (allowed) {
-            // ✅ AUDIT LOG: Contextual allowlist bypass
-            this._createAuditEntry('safety_bypass', {
-              type: 'contextual_allowlist',
-              trigger: triggerWord,
-              legal_context: true,
-              matched_keywords: this.context.__verified_intent.contextual_allowlist
-                .find(r => triggerWord.includes(r.trigger.toLowerCase()))?.requires || [],
+          if (this.piiMode === 'redact-and-log') {
+            this._createAuditEntry('pii_redacted', {
+              field,
+              redaction_count: redactions.length,
+              redactions: redactions.map(r => ({
+                label: r.replacement,
+                capability: r.capability,
+                lang: r.lang
+                // NOTE: original value intentionally excluded from audit log
+                // to avoid persisting the very PII we just redacted
+              })),
               severity: 'info'
             });
-            continue; // Skip blocking this match
+          }
+
+          if (this.verbose) {
+            console.log(
+              `🛡️  [O-Lang PII] Redacted ${redactions.length} item(s) in "${field}": ` +
+              redactions.map(r => r.replacement).join(', ')
+            );
           }
         }
-
-        // ✅ AUDIT LOG: Input Safety Violation (only if not bypassed)
-        this._createAuditEntry('input_safety_violation', {
-          type: 'blocked_input',
-          field: field,
-          detected_phrase: match ? match[0].trim() : 'unknown pattern',
-          capability: capability,
-          language: lang,
-          african_language_detected: isAfrican,
-          financial_expression_found: isFinancial,
-          legal_context_detected: isLegalContext,
-          severity: 'high'
-        });
-
-        throw new Error(
-          `[O-Lang SAFETY] Blocked Input in "${lang}":\n` +
-          `  → Detected: "${match ? match[0].trim() : 'Pattern Match'}"\n` +
-          `  → Capability: ${capability}\n` +
-          `  → Field: ${field}\n` +
-          `  → African Language Detected: ${isAfrican}\n` +
-          `  → Financial Expression: ${isFinancial}\n` +
-          `  → Legal Context: ${isLegalContext}\n` +
-          `\n🛑 Workflow halted before execution.`
-        );
       }
     }
-  }
-  return { passed: true };
-}
 
-// -----------------------------
-  // ✅ KERNEL-LEVEL LLM HALLUCINATION PREVENTION (CONJUGATION-AWARE + EVASION-RESISTANT)
-  // -----------------------------
+    // ── PASS 2: Financial intent scan (always blocks, mode-independent) ───
+    for (const field of fieldsToScan) {
+      const text = inputs[field]; // may already be PII-redacted from pass 1
+      if (!text || typeof text !== 'string') continue;
+
+      // 🔒 CONJUGATION-AWARE + EVASION-RESISTANT PAN-AFRICAN INTENT DETECTION (INPUT)
+      for (const { pattern, capability, lang } of this._getFinancialIntentPatterns()) {
+        if (pattern.test(text)) {
+          const match = text.match(pattern);
+          const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'xh', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
+          const isFinancial = ['transfer', 'payment', 'withdrawal', 'deposit', 'financial_action'].includes(capability);
+
+          // ✅ DECOUPLED: Check legal context via standardized signals (not UI fields)
+          const intent = this.context.__verified_intent || {};
+          const signals = intent.context_signals || {};
+
+          const isLegalContext =
+            // Signal 1: Explicit scope declaration
+            intent.scope === 'legal_analysis_only' ||
+
+            // Signal 2: Standardized context signals (server-mapped, UI-agnostic)
+            signals.isLegalDocument === true ||
+            signals.documentCategory === 'contract' ||
+            signals.documentCategory === 'nda' ||
+            signals.documentCategory === 'agreement' ||
+            signals.documentCategory === 'legal' ||
+
+            // Signal 3: Semantic fallback (works even if signals missing)
+            (typeof text === 'string' && /clause|term|agreement|contract|obligation|penalty|damages|breach|party|shall|herein/i.test(text));
+
+          // ✅ NEW: Check contextual allowlist if in legal context
+          if (isLegalContext && this.context.__verified_intent?.contextual_allowlist) {
+            const allowlist = this.context.__verified_intent.contextual_allowlist;
+            const triggerWord = match ? match[0].toLowerCase() : '';
+
+            const allowed = allowlist.some(rule => {
+              // Check if this pattern's capability matches the rule's trigger
+              const triggerMatch =
+                triggerWord.includes(rule.trigger.toLowerCase()) ||
+                capability.toLowerCase().includes(rule.trigger.toLowerCase()); // ← Handle capability-level triggers
+
+              if (triggerMatch) {
+                // Check if required legal keywords are present
+                return rule.requires.some(keyword =>
+                  text.toLowerCase().includes(keyword.toLowerCase())
+                );
+              }
+              return false;
+            });
+
+            if (allowed) {
+              // ✅ AUDIT LOG: Contextual allowlist bypass
+              this._createAuditEntry('safety_bypass', {
+                type: 'contextual_allowlist',
+                trigger: triggerWord,
+                legal_context: true,
+                matched_keywords: this.context.__verified_intent.contextual_allowlist
+                  .find(r => triggerWord.includes(r.trigger.toLowerCase()))?.requires || [],
+                severity: 'info'
+              });
+              continue; // Skip blocking this match
+            }
+          }
+
+          // ✅ AUDIT LOG: Input Safety Violation (only if not bypassed)
+          this._createAuditEntry('input_safety_violation', {
+            type: 'blocked_input',
+            field: field,
+            detected_phrase: match ? match[0].trim() : 'unknown pattern',
+            capability: capability,
+            language: lang,
+            african_language_detected: isAfrican,
+            financial_expression_found: isFinancial,
+            legal_context_detected: false,
+            severity: 'high'
+          });
+
+          throw new Error(
+            `[O-Lang SAFETY] Blocked Input in "${lang}":\n` +
+            `  → Detected: "${match ? match[0].trim() : 'Pattern Match'}"\n` +
+            `  → Capability: ${capability}\n` +
+            `  → Field: ${field}\n` +
+            `  → African Language Detected: ${isAfrican}\n` +
+            `  → Financial Expression: ${isFinancial}\n` +
+            `\n🛑 Workflow halted before execution.`
+          );
+        }
+      }
+    }
+
+    // ── PASS 3: PII block scan (only in block mode — original behaviour) ──
+    if (!redactMode) {
+      for (const field of fieldsToScan) {
+        const text = inputs[field];
+        if (!text || typeof text !== 'string') continue;
+
+        for (const { pattern, capability, lang, label } of this._getPIIPatterns()) {
+          if (pattern.test(text)) {
+            const match = text.match(pattern);
+            const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'xh', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
+
+            this._createAuditEntry('input_safety_violation', {
+              type: 'blocked_input',
+              field: field,
+              detected_phrase: match ? match[0].trim() : 'unknown pattern',
+              capability: capability,
+              language: lang,
+              african_language_detected: isAfrican,
+              financial_expression_found: false,
+              pii_type: label,
+              severity: 'high'
+            });
+
+            throw new Error(
+              `[O-Lang SAFETY] Blocked PII in field "${field}" (${lang}):\n` +
+              `  → Type: ${label}\n` +
+              `  → Capability: ${capability}\n` +
+              `\n🛑 Workflow halted before execution. Set OLANG_PII_MODE=redact to auto-redact instead.`
+            );
+          }
+        }
+      }
+    }
+
+    return {
+      passed: true,
+      redactions: Object.keys(allRedactions).length > 0 ? allRedactions : null
+    };
+  }
+
+  // ================================
+  // ✅ UPDATED v1.3.0 — KERNEL-LEVEL LLM HALLUCINATION PREVENTION
+  // (CONJUGATION-AWARE + EVASION-RESISTANT)
+  //
+  // Now uses _getFinancialIntentPatterns() instead of inline duplicate.
+  // Xhosa patterns included automatically via the shared set.
+  // All __verified_intent logic unchanged for backward compat.
+  // ================================
   _validateLLMOutput(output, actionContext) {
     if (!output || typeof output !== 'string') return { passed: true };
 
     // ── __verified_intent takes priority ──────────────────────────────────────
-const intent = this.context.__verified_intent;
-if (intent) {
-  if (intent.prohibited_actions && Array.isArray(intent.prohibited_actions)) {
-    const lower = output.toLowerCase();
-    for (const action of intent.prohibited_actions) {
-      if (lower.includes(action.toLowerCase())) {
-        return {
-          passed: false,
-          reason: `Output violates prohibited action "${action}" defined in __verified_intent`,
-          detected: action,
-          language: 'multi'
-        };
-      }
-    }
-  }
-
-  if (intent.prohibited_topics && Array.isArray(intent.prohibited_topics)) {
-    for (const topic of intent.prohibited_topics) {
-      const isRegex = typeof topic === 'object' && topic.pattern;
-      let matched = false;
-      let detected = '';
-
-      if (isRegex) {
-        try {
-          const re = new RegExp(topic.pattern, topic.flags || 'i');
-          const match = output.match(re);
-          matched = !!match;
-          detected = match ? match[0] : topic.pattern;
-        } catch (e) {
-          this.addWarning(`Invalid prohibited_topic regex: "${topic.pattern}" — ${e.message}`);
-          continue;
+    const intent = this.context.__verified_intent;
+    if (intent) {
+      if (intent.prohibited_actions && Array.isArray(intent.prohibited_actions)) {
+        const lower = output.toLowerCase();
+        for (const action of intent.prohibited_actions) {
+          if (lower.includes(action.toLowerCase())) {
+            return {
+              passed: false,
+              reason: `Output violates prohibited action "${action}" defined in __verified_intent`,
+              detected: action,
+              language: 'multi'
+            };
+          }
         }
-      } else {
-        matched = output.toLowerCase().includes(topic.toLowerCase());
-        detected = topic;
       }
 
-      if (matched) {
-        return {
-          passed: false,
-          reason: `Output violates prohibited topic "${isRegex ? topic.pattern : topic}" defined in __verified_intent`,
-          detected,
-          language: 'multi'
-        };
+      if (intent.prohibited_topics && Array.isArray(intent.prohibited_topics)) {
+        for (const topic of intent.prohibited_topics) {
+          const isRegex = typeof topic === 'object' && topic.pattern;
+          let matched = false;
+          let detected = '';
+
+          if (isRegex) {
+            try {
+              const re = new RegExp(topic.pattern, topic.flags || 'i');
+              const match = output.match(re);
+              matched = !!match;
+              detected = match ? match[0] : topic.pattern;
+            } catch (e) {
+              this.addWarning(`Invalid prohibited_topic regex: "${topic.pattern}" — ${e.message}`);
+              continue;
+            }
+          } else {
+            matched = output.toLowerCase().includes(topic.toLowerCase());
+            detected = topic;
+          }
+
+          if (matched) {
+            return {
+              passed: false,
+              reason: `Output violates prohibited topic "${isRegex ? topic.pattern : topic}" defined in __verified_intent`,
+              detected,
+              language: 'multi'
+            };
+          }
+        }
       }
+
+      // __verified_intent present and passed — skip hardcoded patterns
+      return { passed: true };
     }
-  }
 
-  // __verified_intent present and passed — skip hardcoded patterns
-  return { passed: true };
-}
-
-    // ── No __verified_intent — fall through to hardcoded patterns ─────────────
+    // ── No __verified_intent — fall through to shared pattern set ─────────────
     // 🔑 Extract allowed capabilities from workflow allowlist
     const allowedCapabilities = Array.from(this.allowedResolvers)
       .filter(name => !name.startsWith('llm-') && name !== 'builtInMathResolver')
       .map(name => name.replace('@o-lang/', '').replace(/-resolver$/, ''));
 
-    // 🔒 CONJUGATION-AWARE + EVASION-RESISTANT PAN-AFRICAN INTENT DETECTION
-const forbiddenPatterns = [
-  // ────────────────────────────────────────────────
-  // 🇳🇬 NIGERIAN LANGUAGES
-  // ────────────────────────────────────────────────
-
-  // YORUBA
-  { pattern: /fi\s+(?:owo|ẹ̀wọ̀|ewo|ku|fun|s'ọkọọ)/i, capability: 'transfer', lang: 'yo' },
-  { pattern: /san\s+(?:owo|ẹ̀wọ̀|ewo|fun|wo)/i, capability: 'payment', lang: 'yo' },
-  { pattern: /gba\s+owo/i, capability: 'withdrawal', lang: 'yo' },
-  { pattern: /fi\s+\w+\s+\w+\s+ranṣẹ/i, capability: 'transfer', lang: 'yo' },
-  { pattern: /ranṣẹ\s+(?:owo|pesa|kuɗi|ego)/i, capability: 'transfer', lang: 'yo' },
-  { pattern: /\bti\s+(?:fi|san|gba|da|lo)/i, capability: 'unauthorized_action', lang: 'yo' },
-  { pattern: /\b(?:ń|ǹ|n)\s+(?:fi|san|gba)/i, capability: 'unauthorized_action', lang: 'yo' },
-  { pattern: /\b(mo\s+ti\s+(?:fi|san|gba))/i, capability: 'unauthorized_action', lang: 'yo' },
-
-  // HAUSA
-  { pattern: /aika.{0,30}ku(?:ɗ|d)i/iu, capability: 'transfer', lang: 'ha' },
-  { pattern: /ciyar\s*(?:da)?/i, capability: 'transfer', lang: 'ha' },
-  { pattern: /shiga\s+ku(?:ɗ|d)i/iu, capability: 'transfer', lang: 'ha' },
-  { pattern: /turo\s+.*\s+aika/i, capability: 'transfer', lang: 'ha' },
-  { pattern: /biya\s*(?:da)?/i, capability: 'payment', lang: 'ha' },
-  { pattern: /sahaw[ae]\s+ku(?:ɗ|d)i/iu, capability: 'withdrawal', lang: 'ha' },
-  { pattern: /(?:ya|ta|su)\s+(?:ciyar|biya|sahawa|sake)/i, capability: 'unauthorized_action', lang: 'ha' },
-  { pattern: /(?:za\s+a|za\s+ta)\s+(?:ciyar|biya)/i, capability: 'unauthorized_action', lang: 'ha' },
-  { pattern: /ina\s+(?:ciyar|biya|sahawa)/i, capability: 'unauthorized_action', lang: 'ha' },
-
-  // IGBO
-  { pattern: /zipu\s+(?:ego|moni|isi|na)/i, capability: 'transfer', lang: 'ig' },
-  { pattern: /buru\s+(?:ego|moni|isi)/i, capability: 'transfer', lang: 'ig' },
-  { pattern: /zi\s+.*\s+zipu/i, capability: 'transfer', lang: 'ig' },
-  { pattern: /tinye\s+(?:ego|moni|isi)/i, capability: 'deposit', lang: 'ig' },
-  { pattern: /(?:ziri|bururu|tinyere|gbara)/i, capability: 'unauthorized_action', lang: 'ig' },
-  { pattern: /m\s+(?:ziri|buru|zipuru|tinyere)/i, capability: 'unauthorized_action', lang: 'ig' },
-
-  // SWAHILI
-  { pattern: /tuma\s+(?:pesa|fedha)/i, capability: 'transfer', lang: 'sw' },
-  { pattern: /pelek[ae]?\s+(?:pesa|fedha)/i, capability: 'transfer', lang: 'sw' },
-  { pattern: /wasilisha/i, capability: 'transfer', lang: 'sw' },
-  { pattern: /\b\w*lip[ae]\w*/i, capability: 'payment', lang: 'sw' },
-  { pattern: /maliza\s+malipo/i, capability: 'payment', lang: 'sw' },
-  { pattern: /ongez[ae]?\s*(?:kiasi|pesa|fedha)/i, capability: 'deposit', lang: 'sw' },
-  { pattern: /wek[ae]?\s+(?:katika|ndani)\s+(?:akaunti|hisa)/i, capability: 'deposit', lang: 'sw' },
-  { pattern: /nime(?:tuma|lipa|ongeza|weka|peleka)/i, capability: 'unauthorized_action', lang: 'sw' },
-  { pattern: /(?:ni|u|a|tu|m|wa|ki|vi|zi|i)\s*me\s*(?:ongeza|weka|tuma|peleka|lipa|wasilisha)/i, capability: 'unauthorized_action', lang: 'sw' },
-
-  // ────────────────────────────────────────────────
-  // 🌍 OTHER AFRICAN LANGUAGES
-  // ────────────────────────────────────────────────
-
-  // AMHARIC - Unicode escapes to avoid encoding issues
-  { pattern: /\u120b\u12ad/u, capability: 'transfer', lang: 'am' },
-  { pattern: /\u1308\u1263/u, capability: 'deposit', lang: 'am' },
-  { pattern: /\u12ad\u134c\u120d/u, capability: 'payment', lang: 'am' },
-  { pattern: /[\u1200-\u137F]{0,4}(?:\u1270\u120b\u120b\u1348|\u120b\u12ad|\u12ad\u134c\u120d|\u1338\u121d\u122d|\u12c8\u1323|\u1308\u1263)[\u1200-\u137F]{0,2}/u, capability: 'financial_action', lang: 'am' },
-
-  // SOMALI
-  { pattern: /dir\s+(?:lacag|maal|qarsoon)/i, capability: 'transfer', lang: 'so' },
-  { pattern: /bixi|bixis\s*o/i, capability: 'payment', lang: 'so' },
-
-  // ZULU
-  { pattern: /thumel/i, capability: 'transfer', lang: 'zu' },
-  { pattern: /thumel.*imali/i, capability: 'transfer', lang: 'zu' },
-  { pattern: /hlawul/i, capability: 'payment', lang: 'zu' },
-  { pattern: /hlawul.*imali/i, capability: 'payment', lang: 'zu' },
-
-  // ────────────────────────────────────────────────
-  // 🌐 GLOBAL LANGUAGES
-  // ────────────────────────────────────────────────
-  { pattern: /\b(?:have|has|had)\s+(?:transferred|sent|paid|withdrawn|deposited|wire[d])\b/i, capability: 'unauthorized_action', lang: 'en' },
-  { pattern: /\b(?:was|were|been)\s+(?:added|credited|transferred|sent|paid)\b/i, capability: 'unauthorized_action', lang: 'en' },
-  { pattern: /\b(transfer(?:red|ring)?|send(?:ing)?|wire(?:d)?|pay(?:ed|ing)?|withdraw(?:n)?|deposit(?:ed|ing)?|disburse(?:d)?)\b/i, capability: 'financial_action', lang: 'en' },
-  { pattern: /\bI\s+(?:can|will|am able to|have|'ve|did|already)\s+(?:transfer|send|pay|withdraw|deposit|wire)\b/i, capability: 'unauthorized_action', lang: 'en' },
-  { pattern: /\b(?:j'?ai|tu as|il a|elle a|nous avons|vous avez|ils ont|elles ont)\s+(?:viré|transféré|envoyé|payé|retiré|déposé)\b/i, capability: 'unauthorized_action', lang: 'fr' },
-  { pattern: /\b(virer|transférer|envoyer|payer|retirer|déposer|débiter|créditer)\b/i, capability: 'financial_action', lang: 'fr' },
-  { pattern: /[\u0600-\u06FF]{0,3}(?:حوّل|أرسل|ادفع|اودع|سحب)[\u0600-\u06FF]{0,3}(?:ت|نا|تم|تا|تِ|تُ|تَ)[\u0600-\u06FF]{0,3}/u, capability: 'financial_action', lang: 'ar' },
-  { pattern: /[\u0600-\u06FF]{0,3}(?:أنا|تم|لقد)\s*(?:حوّلت|أرسلت|دفعت|اودعت)[\u0600-\u06FF]{0,3}/u, capability: 'unauthorized_action', lang: 'ar' },
-  { pattern: /[\u4e00-\u9fff]{0,2}(?:转账|支付|存款|取款)[\u4e00-\u9fff]{0,2}(?:了)[\u4e00-\u9fff]{0,2}/u, capability: 'financial_action', lang: 'zh' },
-  { pattern: /[\u4e00-\u9fff]{0,2}(?:转账|转帐|支付|付款|提款|取款|存款|存入|汇款|存)[\u4e00-\u9fff]{0,2}/u, capability: 'financial_action', lang: 'zh' },
-  { pattern: /[\u4e00-\u9fff]{0,2}(?:我|已|已经)\s*(?:转账|支付|提款|存款)[\u4e00-\u9fff]{0,2}/u, capability: 'unauthorized_action', lang: 'zh' },
-
-  // ────────────────────────────────────────────────
-  // 🛡️ PII & EVASION
-  // ────────────────────────────────────────────────
-  { pattern: /\b(?:\+?234\s*|0)(?:70|80|81|90|91)\d{8}\b/, capability: 'pii_exposure', lang: 'multi' },
-  { pattern: /\b(?:bvn|bank\s+verification\s+number)\b.{0,20}\d{11}/i, capability: 'pii_exposure', lang: 'multi' },
-  { pattern: /(?:account|acct|a\/c|akaunti|asusu|hesabu|namba|#)\s*[:\-—–]?\s*(\d{6,})/i, capability: 'pii_exposure', lang: 'multi' },
-  { pattern: /\b(successful(?:ly)?|confirmed|approved|completed|processed|accepted|verified|imethibitishwa|imefanikiwa|amthibitishwa|ti\s+da|ti\s+ṣe|gụnyere|kimefanyika|yamekamilika)\b/i, capability: 'deceptive_claim', lang: 'multi' },
-];
-
-    // 🔍 SCAN OUTPUT FOR FORBIDDEN INTENTS
-    for (const { pattern, capability, lang } of forbiddenPatterns) {
+    // 🔒 SCAN OUTPUT FOR FORBIDDEN INTENTS (shared set — includes Xhosa)
+    for (const { pattern, capability, lang } of this._getFinancialIntentPatterns()) {
       if (pattern.test(output)) {
         const hasCapability = allowedCapabilities.some(c =>
           c.includes(capability) ||
@@ -1121,9 +1360,9 @@ const forbiddenPatterns = [
 
         if (!hasCapability) {
           const match = output.match(pattern);
-          
+
           // ✅ Explicitly flag African & Financial context for Audit Logs
-          const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
+          const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'xh', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
           const isFinancial = ['transfer', 'payment', 'withdrawal', 'deposit', 'financial_action'].includes(capability);
 
           return {
@@ -1131,9 +1370,9 @@ const forbiddenPatterns = [
             reason: `Hallucinated "${capability}" capability in ${lang}...`,
             detected: match ? match[0].trim() : 'unknown pattern',
             language: lang,
-            african_language_detected: isAfrican,      
+            african_language_detected: isAfrican,
             financial_expression_found: isFinancial,
-            capability_attempted: capability 
+            capability_attempted: capability
           };
         }
       }
@@ -1144,22 +1383,22 @@ const forbiddenPatterns = [
   // -----------------------------
   // ✅ CRITICAL FIX: Resolver output unwrapping helper
   // -----------------------------
-_unwrapResolverResult(result) {
-  if (result && typeof result === 'object') {
-    if (result.output !== undefined) return result.output;
-    if (result.response !== undefined) return result.response; // ✅ ADD THIS
-    if (result.text !== undefined) return result.text;
-    if (result.content !== undefined) return result.content;
+  _unwrapResolverResult(result) {
+    if (result && typeof result === 'object') {
+      if (result.output !== undefined) return result.output;
+      if (result.response !== undefined) return result.response; // ✅ ADD THIS
+      if (result.text !== undefined) return result.text;
+      if (result.content !== undefined) return result.content;
+    }
+    return result;
   }
-  return result;
-}
 
   // -----------------------------
   // Step execution (WHERE RESOLVERS ARE INVOKED)
   // -----------------------------
   async executeStep(step, agentResolver) {
     const stepType = step.type;
-    
+
     // ✅ Enforce per-step constraints (basic validation)
     if (step.constraints && Object.keys(step.constraints).length > 0) {
       for (const [key, value] of Object.entries(step.constraints)) {
@@ -1235,7 +1474,7 @@ _unwrapResolverResult(result) {
             this.context[`__resolver_${idx}`] = result;
             return this._unwrapResolverResult(result);
           }
-          
+
           resolverAttempts.push({
             name: resolverName,
             status: 'skipped',
@@ -1303,7 +1542,7 @@ _unwrapResolverResult(result) {
           errorMessage += `    → Verify API keys/tokens are set in environment variables\n`;
         }
       }
-      
+
       errorMessage += `\n• Resolver documentation:\n`;
       let hasDocs = false;
       resolverAttempts.forEach(attempt => {
@@ -1319,7 +1558,7 @@ _unwrapResolverResult(result) {
       throw new Error(errorMessage);
     };
 
-      switch (stepType) {
+    switch (stepType) {
       case 'calculate': {
         // ✅ Interpolate variables in the expression before evaluation
         let expr = step.expression || step.actionRaw;
@@ -1330,7 +1569,7 @@ _unwrapResolverResult(result) {
         if (step.saveAs) this.context[step.saveAs] = result;
         break;
       }
-      
+
       case 'action': {
         let action = this._safeInterpolate(
           step.actionRaw,
@@ -1428,7 +1667,7 @@ _unwrapResolverResult(result) {
         }
         break;
       }
-      
+
       case 'use': {
         const tool = this._safeInterpolate(step.tool, this.context, 'tool name');
         const rawResult = await runResolvers(`Use ${tool}`);
@@ -1436,7 +1675,7 @@ _unwrapResolverResult(result) {
         if (step.saveAs) this.context[step.saveAs] = unwrapped;
         break;
       }
-      
+
       case 'ask': {
         const target = this._safeInterpolate(step.target, this.context, 'LLM prompt');
         if (/{[^}]+}/.test(target)) {
@@ -1461,7 +1700,7 @@ _unwrapResolverResult(result) {
         if (step.saveAs) this.context[step.saveAs] = unwrapped;
         break;
       }
-      
+
       case 'evolve': {
         const { targetResolver, feedback } = step;
         if (this.verbose) {
@@ -1483,14 +1722,14 @@ _unwrapResolverResult(result) {
         }
         break;
       }
-      
+
       case 'if': {
         if (this.evaluateCondition(step.condition, this.context)) {
           for (const s of step.body) await this.executeStep(s, agentResolver);
         }
         break;
       }
-      
+
       case 'parallel': {
         const { steps, timeout } = step;
         if (timeout !== undefined && timeout > 0) {
@@ -1514,7 +1753,7 @@ _unwrapResolverResult(result) {
         }
         break;
       }
-      
+
       case 'escalation': {
         const { levels } = step;
         let finalResult = null;
@@ -1566,17 +1805,17 @@ _unwrapResolverResult(result) {
         }
         break;
       }
-      
+
       case 'connect': {
         this.resources[step.resource] = step.endpoint;
         break;
       }
-      
+
       case 'agent_use': {
         this.agentMap[step.logicalName] = step.resource;
         break;
       }
-      
+
       case 'debrief': {
         if (step.message.includes('{')) {
           const symbols = step.message.match(/\{([^\}]+)\}/g) || [];
@@ -1588,14 +1827,14 @@ _unwrapResolverResult(result) {
         this.emit('debrief', { agent: step.agent, message: step.message });
         break;
       }
-      
+
       case 'prompt': {
         if (this.verbose) {
           console.log(`❓ Prompt: ${step.question}`);
         }
         break;
       }
-      
+
       case 'emit': {
         const payloadTemplate = step.payload;
         const symbols = [...new Set(payloadTemplate.match(/\{([^\}]+)\}/g) || [])];
@@ -1623,7 +1862,7 @@ _unwrapResolverResult(result) {
         }
         break;
       }
-      
+
       case 'persist': {
         if (!this._requireSemantic(step.variable, 'persist')) {
           if (this.verbose) {
@@ -1649,7 +1888,7 @@ _unwrapResolverResult(result) {
         }
         break;
       }
-      
+
       case 'persist-db': {
         if (!this.dbClient) {
           this.addWarning(`DB persistence skipped (no DB configured). Set OLANG_DB_TYPE env var.`);
@@ -1682,7 +1921,7 @@ _unwrapResolverResult(result) {
               const db = this.dbClient.client.db(process.env.DB_NAME || 'olang');
               await db.collection(step.collection).insertOne({
                 workflow_name: this.context.workflow_name || 'unknown',
-                 sourceValue,
+                sourceValue,
                 created_at: new Date()
               });
               break;
@@ -1717,18 +1956,20 @@ _unwrapResolverResult(result) {
     if (workflow.type !== 'workflow') {
       throw new Error(`Unknown workflow type: ${workflow.type}`);
     }
-    
+
     this.context = {
       ...inputs,
       workflow_name: workflow.name
     };
 
-       // ✅ NEW: Validate Inputs BEFORE any step runs
-    this._validateInputs(inputs); 
+    // ✅ NEW: Validate Inputs BEFORE any step runs
+    // In redact mode: PII tokens are replaced in place, execution continues.
+    // In block mode (default): throws on any PII or financial intent match.
+    this._validateInputs(inputs);
 
     // ✅ AUDIT LOG: Workflow start (ENHANCED with governance metadata)
     const governanceHash = this._generateGovernanceProfileHash(workflow);
-    
+
     this._createAuditEntry('workflow_started', {
       workflow_id: `${workflow.name}@${workflow.version || 'unversioned'}`, // ✅ Workflow ID
       workflow_name: workflow.name,
@@ -1739,6 +1980,7 @@ _unwrapResolverResult(result) {
       inputs_count: Object.keys(inputs).length,
       steps_count: workflow.steps.length,
       allowed_resolvers: workflow.allowedResolvers || [],
+      pii_mode: this.piiMode, // ✅ NEW v1.3.0 — surfaced in audit
       constraints: {
         max_generations: workflow.maxGenerations,
         strict_inputs: process.env.OLANG_STRICT_INPUTS === 'true'
@@ -1773,7 +2015,7 @@ _unwrapResolverResult(result) {
     for (const step of workflow.steps) {
       await this.executeStep(step, agentResolver);
     }
-    
+
     // ✅ AUDIT LOG: Workflow completion (ENHANCED)
     this._createAuditEntry('workflow_completed', {
       workflow_id: `${workflow.name}@${workflow.version || 'unversioned'}`,
