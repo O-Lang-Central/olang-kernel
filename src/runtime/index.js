@@ -106,4 +106,14 @@ async function execute(workflow, inputs, agentResolver, verbose = false) {
   return result;
 }
 
-module.exports = { execute, parse };
+// ── Standalone PII redaction helper ──────────────────────────────────────────
+// Exposes kernel redaction without running a full workflow.
+// Usage: const { redacted, redactions } = redact(userInput);
+
+function redact(text) {
+  const rt = new RuntimeAPI({ verbose: false });
+  return rt.redact(text);
+}
+
+
+module.exports = { execute, parse, redact };

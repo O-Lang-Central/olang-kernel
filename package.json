@@ -40,7 +40,10 @@
     "ai",
     "pii-redaction",
     "african-languages",
-    "ai-safety"
+    "ai-safety",
+    "twi",
+    "ghana",
+    "akan"
   ],
   "license": "MIT",
   "repository": {

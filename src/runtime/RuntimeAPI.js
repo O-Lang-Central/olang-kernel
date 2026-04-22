@@ -105,9 +105,9 @@ class RuntimeAPI {
         lang: 'et',
         label: 'ET_PHONE'
       },
-      // Ghana (+233)
+      // 🇬🇭 Ghana (+233) - MTN (24/54), Telecel (20/50), AT (26/56), Glo (23)
       {
-        pattern: /\b(?:\+?233\s*[-.]?|0)[235]\d{8}\b/g,
+        pattern: /\b(?:\+?233\s*[-.]?|0)(?:2[0346]|5[046])\d{7}\b/g,
         capability: 'pii_phone',
         lang: 'gh',
         label: 'GH_PHONE'
@@ -136,6 +136,13 @@ class RuntimeAPI {
         lang: 'ng',
         label: 'NG_NIN'
       },
+      // 🇬🇭 Ghana Card (National ID) - Format: GHA-XXXXXXXXX-X
+      {
+        pattern: /\bGHA-\d{9}-\d\b/ig,
+        capability: 'pii_national_id',
+        lang: 'gh',
+        label: 'GH_CARD'
+      },
       // South Africa ID (13 digits YYMMDD + gender + race + check)
       {
         pattern: /\b[0-9]{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12][0-9]|3[01])[0-9]{4}[01][0-9]{2}\b/g,
@@ -154,8 +161,9 @@ class RuntimeAPI {
       // ── Bank Account Numbers ───────────────────────────────────────────────
 
       // Generic account reference (works across all listed languages)
+      // Added Twi/Akan terms: 'sika' (money), 'konte' (account)
       {
-        pattern: /(?:account|acct|a\/c|akaunti|asusu|hesabu|namba|#|compte|cuenta|konto|حساب|حساب\s+رقم|حسابي|akaunti\s+ya|nambari\s+ya\s+akaunti)\s*[:\-—–]?\s*(\d{6,18})\b/ig,
+        pattern: /(?:account|acct|a\/c|akaunti|asusu|hesabu|namba|#|compte|cuenta|konto|konte|sika\s+number|حساب|حساب\s+رقم|حسابي|akaunti\s+ya|nambari\s+ya\s+akaunti)\s*[:\-—–]?\s*(\d{6,18})\b/ig,
         capability: 'pii_account',
         lang: 'multi',
         label: 'ACCOUNT_NUMBER'
@@ -186,7 +194,6 @@ class RuntimeAPI {
       }
     ];
   }
-
   // ================================
   // ✅ NEW v1.3.0 — FINANCIAL INTENT PATTERN SET (unchanged from v1.2.x)
   //
@@ -273,6 +280,34 @@ class RuntimeAPI {
       { pattern: /rhola\s+imali/i, capability: 'withdrawal', lang: 'xh' },          // withdraw money
       { pattern: /ndi(?:thumele|hlawule|beke|rhola)/i, capability: 'unauthorized_action', lang: 'xh' }, // 1st person perfect
       { pattern: /u(?:thumele|hlawule|beke|rhola)/i, capability: 'unauthorized_action', lang: 'xh' },   // 3rd person perfect
+
+            // ────────────────────────────────────────────────
+      // 🇬🇭 GHANA: TWI (AKAN) ✅ NEW v1.3.0-alpha
+      //
+      // Twi is the most widely spoken language in Ghana.
+      // Financial roots: 'soma' (send), 'tua' (pay), 'fa' (take/use), 'kɔ' (go)
+      // ────────────────────────────────────────────────
+      
+      // Transfer/Send Money
+      { pattern: /soma\s+(?:sika|money)/i, capability: 'transfer', lang: 'tw' }, // Send money
+      { pattern: /de\s+sika\s+ma/i, capability: 'transfer', lang: 'tw' },        // Give money
+      { pattern: /fa\s+sika\s+(?:kɔ|yi)/i, capability: 'transfer', lang: 'tw' }, // Take money away
+      
+      // Payment
+      { pattern: /tua\s+(?:ka|sika)/i, capability: 'payment', lang: 'tw' },      // Pay debt/money
+      { pattern: /san\s+ka\s+sika/i, capability: 'payment', lang: 'tw' },        // Pay back money
+      
+      // Withdrawal
+      { pattern: /yi\s+sika\s+fi/i, capability: 'withdrawal', lang: 'tw' },      // Remove money from...
+      { pattern: /twa\s+sika\s+fi\s+(?:bank|account)/i, capability: 'withdrawal', lang: 'tw' }, // Cut/withdraw money
+      
+      // Deposit
+      { pattern: /de\s+sika\s+to/i, capability: 'deposit', lang: 'tw' },         // Put money in
+      { pattern: /hyeh\s+sika\s+mu/i, capability: 'deposit', lang: 'tw' },       // Insert money into
+      
+      // Unauthorized Action (First Person Perfective - "I have sent/paid")
+      { pattern: /ma(?:te|ye)\s+(?:soma|tua|yi|de)/i, capability: 'unauthorized_action', lang: 'tw' }, 
+      { pattern: /me(?:soma|tua|yi|de)/i, capability: 'unauthorized_action', lang: 'tw' }, // I send/pay/take
 
       // ────────────────────────────────────────────────
       // 🌐 GLOBAL LANGUAGES
@@ -1155,7 +1190,7 @@ class RuntimeAPI {
       for (const { pattern, capability, lang } of this._getFinancialIntentPatterns()) {
         if (pattern.test(text)) {
           const match = text.match(pattern);
-          const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'xh', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
+          const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'xh', 'am', 'om', 'ff', 'so', 'sn','tw'].includes(lang);
           const isFinancial = ['transfer', 'payment', 'withdrawal', 'deposit', 'financial_action'].includes(capability);
 
           // ✅ DECOUPLED: Check legal context via standardized signals (not UI fields)
@@ -1245,7 +1280,7 @@ class RuntimeAPI {
         for (const { pattern, capability, lang, label } of this._getPIIPatterns()) {
           if (pattern.test(text)) {
             const match = text.match(pattern);
-            const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'xh', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
+            const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'xh', 'am', 'om', 'ff', 'so', 'sn','tw'].includes(lang);
 
             this._createAuditEntry('input_safety_violation', {
               type: 'blocked_input',
@@ -1362,7 +1397,7 @@ class RuntimeAPI {
           const match = output.match(pattern);
 
           // ✅ Explicitly flag African & Financial context for Audit Logs
-          const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'xh', 'am', 'om', 'ff', 'so', 'sn'].includes(lang);
+          const isAfrican = ['yo', 'ig', 'ha', 'sw', 'zu', 'xh', 'am', 'om', 'ff', 'so', 'sn','tw'].includes(lang);
           const isFinancial = ['transfer', 'payment', 'withdrawal', 'deposit', 'financial_action'].includes(capability);
 
           return {
