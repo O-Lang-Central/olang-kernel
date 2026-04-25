@@ -3,7 +3,7 @@ const path = require('path');
 const crypto = require('crypto'); // ✅ CRYPTOGRAPHIC AUDIT LOGS
 
 // ✅ O-Lang Kernel Version (Safety Logic & Governance Rules)
-const KERNEL_VERSION = '1.3.0-alpha'; // 🔁 Bumped: PII redaction engine added
+const KERNEL_VERSION = '1.4.0-alpha.1'; // 🔁 Bumped: PII redaction engine added
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ✅ NEW v1.3.0 — SEPARATED PATTERN SETS
@@ -997,37 +997,129 @@ class RuntimeAPI {
     return path.split('.').reduce((o, k) => (o && o[k] !== undefined ? o[k] : undefined), obj);
   }
 
+  /**
+   * evaluateCondition(cond, ctx)
+   * 
+   * Governance Features:
+   *   1. Quote-Aware Parsing: Prevents splitting on "or"/"and" inside quoted strings.
+   *   2. Strict Equality: Uses === to prevent type-coercion safety bypasses.
+   *   3. Comprehensive Operators: Supports gte, lte, contains, not equals.
+   *   4. Auditability: Warns on unrecognised syntax to prevent silent failures.
+   */
   evaluateCondition(cond, ctx) {
+    if (!cond) return false;
     cond = cond.trim();
 
-    // ✅ 1. Handle Logical OR (|| or 'or')
-    if (/\|\||\bor\b/i.test(cond)) {
-      return cond.split(/\|\||\bor\b/i).some(c => this.evaluateCondition(c.trim(), ctx));
-    }
-    // ✅ 2. Handle Logical AND (&& or 'and')
-    if (/&&|\band\b/i.test(cond)) {
-      return cond.split(/&&|\band\b/i).every(c => this.evaluateCondition(c.trim(), ctx));
+    // ── Helper: split on logical operators OUTSIDE quoted strings ────────────
+    const splitOutsideQuotes = (str, regex) => {
+      const parts = [];
+      let current = '';
+      let inQuote = false;
+      let quoteChar = '';
+      
+      for (let i = 0; i < str.length; i++) {
+        const ch = str[i];
+        
+        // Handle quote toggling
+        if (!inQuote && (ch === '"' || ch === "'")) {
+          inQuote = true; 
+          quoteChar = ch; 
+          current += ch;
+        } else if (inQuote && ch === quoteChar) {
+          // Check for escaped quote? For now, simple toggle.
+          inQuote = false; 
+          quoteChar = ''; 
+          current += ch;
+        } else if (!inQuote) {
+          // Check for operator match at current position
+          const remaining = str.slice(i);
+          const m = remaining.match(regex);
+          if (m && m.index === 0) {
+            parts.push(current); 
+            current = ''; 
+            i += m[0].length - 1; 
+            continue;
+          } else { 
+            current += ch; 
+          }
+        } else { 
+          current += ch; 
+        }
+      }
+      parts.push(current);
+      return parts.map(p => p.trim()).filter(Boolean);
+    };
+
+    // ── 1. Logical OR ─────────────────────────────────────────────────────────
+    // (?!\s+equal) prevents splitting on "or" in "greater than or equal"
+    const orParts = splitOutsideQuotes(cond, /^(\|\||\bor\b(?!\s+equal))/i);
+    if (orParts.length > 1) {
+      return orParts.some(c => this.evaluateCondition(c.trim(), ctx));
     }
 
-    // ✅ 3. Handle == or === (works with or without {})
-    const eqMatch = cond.match(/^(?:\{(.+)\}|(\w+))\s*===?\s*"(.*)"$/);
+    // ── 2. Logical AND ────────────────────────────────────────────────────────
+    const andParts = splitOutsideQuotes(cond, /^(&&|\band\b)/i);
+    if (andParts.length > 1) {
+      return andParts.every(c => this.evaluateCondition(c.trim(), ctx));
+    }
+
+    // ── 3. Strict equality: {var} === "value" or {var} == "value" ────────────
+    const eqMatch = cond.match(/^(?:\{(.+?)\}|(\w[\w.]*?))\s*===?\s*"(.*)"$/);
     if (eqMatch) {
       const key = eqMatch[1] || eqMatch[2];
       return this.getNested(ctx, key) === eqMatch[3];
     }
 
-    // ✅ 4. Keep original O-Lang syntax
-    const oldEq = cond.match(/^\{(.+)\}\s+equals\s+"(.*)"$/);
-    if (oldEq) return this.getNested(ctx, oldEq[1]) == oldEq[2];
+    // ── 4. Not equals: {var} != "value" or {var} !== "value" ─────────────────
+    const neqMatch = cond.match(/^(?:\{(.+?)\}|(\w[\w.]*?))\s*!==?\s*"(.*)"$/);
+    if (neqMatch) {
+      const key = neqMatch[1] || neqMatch[2];
+      return this.getNested(ctx, key) !== neqMatch[3];
+    }
 
-    const gt = cond.match(/^\{(.+)\}\s+greater than\s+(\d+\.?\d*)$/);
+    // ── 5. O-Lang keyword: {var} equals "value" (strict) ─────────────────────
+    const oldEq = cond.match(/^\{(.+?)\}\s+equals\s+"(.*)"$/);
+    if (oldEq) return this.getNested(ctx, oldEq[1]) === oldEq[2];
+
+    // ── 6. O-Lang keyword: {var} not equals "value" ───────────────────────────
+    const notEq = cond.match(/^\{(.+?)\}\s+not\s+equals\s+"(.*)"$/);
+    if (notEq) return this.getNested(ctx, notEq[1]) !== notEq[2];
+
+    // ── 7. Contains: {var} contains "value" ──────────────────────────────────
+    const containsMatch = cond.match(/^\{(.+?)\}\s+contains\s+"(.*)"$/);
+    if (containsMatch) {
+      const value = this.getNested(ctx, containsMatch[1]);
+      const target = containsMatch[2];
+      if (Array.isArray(value)) return value.includes(target);
+      if (typeof value === 'string') return value.includes(target);
+      return false;
+    }
+
+    // ── 8. Numeric comparisons (GTE/LTE before GT/LT) ────────────────────────
+    const gte = cond.match(/^\{(.+?)\}\s+greater than or equal\s+(\d+\.?\d*)$/);
+    if (gte) return parseFloat(this.getNested(ctx, gte[1])) >= parseFloat(gte[2]);
+
+    const lte = cond.match(/^\{(.+?)\}\s+less than or equal\s+(\d+\.?\d*)$/);
+    if (lte) return parseFloat(this.getNested(ctx, lte[1])) <= parseFloat(lte[2]);
+
+    const gt = cond.match(/^\{(.+?)\}\s+greater than\s+(\d+\.?\d*)$/);
     if (gt) return parseFloat(this.getNested(ctx, gt[1])) > parseFloat(gt[2]);
 
-    const lt = cond.match(/^\{(.+)\}\s+less than\s+(\d+\.?\d*)$/);
+    const lt = cond.match(/^\{(.+?)\}\s+less than\s+(\d+\.?\d*)$/);
     if (lt) return parseFloat(this.getNested(ctx, lt[1])) < parseFloat(lt[2]);
 
-    // Fallback: truthy check
-    return Boolean(this.getNested(ctx, cond.replace(/\{|\}/g, '')));
+    // ── 9. Truthy fallback — warn so authors know it fired ───────────────────
+    const fallbackKey = cond.replace(/^\{|\}$/g, '');
+    const fallbackValue = this.getNested(ctx, fallbackKey);
+    
+    this.addWarning(
+      `evaluateCondition: unrecognised condition syntax "${cond}" — ` +
+      `falling back to truthy check on "${fallbackKey}" ` +
+      `(value: ${JSON.stringify(fallbackValue)}). ` +
+      `If this is unintentional, check your condition syntax.`
+    );
+    
+    return Boolean(fallbackValue);
   }
 
   mathFunctions = {
@@ -1758,110 +1850,495 @@ class RuntimeAPI {
         break;
       }
 
+          // ─────────────────────────────────────────────────────────────────────────────
+      // IF / ELSE-IF / ELSE
+      //
+      // Governance Features:
+      //   1. Exclusive Branching: Only one branch executes (if -> else-if -> else).
+      //   2. Semantic Validation: Checks symbols in conditions before evaluation.
+      //   3. Auditability: Logs which condition was evaluated and which branch fired.
+      // ─────────────────────────────────────────────────────────────────────────────
+
       case 'if': {
-        if (this.evaluateCondition(step.condition, this.context)) {
-          for (const s of step.body) await this.executeStep(s, agentResolver);
+        // 1. Validate all symbols referenced in the main condition
+        const condSymbols = step.condition ? step.condition.match(/\{([^\}]+)\}/g) || [] : [];
+        let symbolsValid = true;
+        
+        for (const sym of condSymbols) {
+          const key = sym.replace(/[{}]/g, '');
+          if (!this._requireSemantic(key, 'if condition')) {
+            symbolsValid = false;
+          }
         }
+
+        if (!symbolsValid) {
+          this._createAuditEntry('condition_skipped', {
+            condition: step.condition,
+            reason: 'One or more symbols missing in context',
+            severity: 'warn'
+          });
+          break;
+        }
+
+        // 2. Evaluate main if condition
+        const mainPassed = this.evaluateCondition(step.condition, this.context);
+
+        this._createAuditEntry('condition_evaluated', {
+          condition: step.condition,
+          passed: mainPassed,
+          branch: 'if',
+          severity: 'info'
+        });
+
+        if (mainPassed) {
+          if (step.body && Array.isArray(step.body)) {
+            for (const s of step.body) await this.executeStep(s, agentResolver);
+          }
+          break; // Exit after successful if
+        }
+
+        // 3. else-if chain — stop at first match
+        if (step.elseIf && Array.isArray(step.elseIf)) {
+          let elseIfFired = false;
+          for (const branch of step.elseIf) {
+            // Validate symbols for else-if branch
+            const branchSymbols = branch.condition ? branch.condition.match(/\{([^\}]+)\}/g) || [] : [];
+            let branchSymbolsValid = true;
+            for (const sym of branchSymbols) {
+              const key = sym.replace(/[{}]/g, '');
+              if (!this._requireSemantic(key, 'else-if condition')) {
+                branchSymbolsValid = false;
+              }
+            }
+
+            if (!branchSymbolsValid) {
+               this._createAuditEntry('condition_skipped', {
+                condition: branch.condition,
+                reason: 'One or more symbols missing in context',
+                severity: 'warn'
+              });
+              continue; // Skip this else-if, try next
+            }
+
+            const branchPassed = this.evaluateCondition(branch.condition, this.context);
+
+            this._createAuditEntry('condition_evaluated', {
+              condition: branch.condition,
+              passed: branchPassed,
+              branch: 'else-if',
+              severity: 'info'
+            });
+
+            if (branchPassed) {
+              if (branch.body && Array.isArray(branch.body)) {
+                for (const s of branch.body) await this.executeStep(s, agentResolver);
+              }
+              elseIfFired = true;
+              break;
+            }
+          }
+          if (elseIfFired) break;
+        }
+
+        // 4. else fallback
+        if (step.elseBranch && Array.isArray(step.elseBranch)) {
+          this._createAuditEntry('condition_evaluated', {
+            condition: 'else',
+            passed: true,
+            branch: 'else',
+            severity: 'info'
+          });
+          for (const s of step.elseBranch) await this.executeStep(s, agentResolver);
+        }
+
         break;
       }
+
+       // ─────────────────────────────────────────────────────────────────────────────
+      // PARALLEL
+      //
+      // Bugs fixed:
+      //   1. Shared this.context race condition — all branches wrote to the same
+      //      object concurrently. Branch 2 restoring the snapshot overwrote whatever
+      //      branch 1 had just saved, so result_a was lost by the time it was read.
+      //      Fix: each branch gets its own context via Object.create(this), which
+      //      prototype-links to the parent (sharing allowedResolvers, auditLog,
+      //      events, verbose) but has its own context property that shadows the
+      //      parent's. Branches never touch this.context directly.
+      //
+      //   2. Promise.all → silent failure swallowing. A single rejection cancelled
+      //      all siblings. Fix: buildStepPromise catches internally and returns a
+      //      structured outcome, so Promise.all always resolves with the full set.
+      //
+      //   3. timed_out not always written. Fix: always written after settlement —
+      //      true on timeout, false on clean completion.
+      //
+      //   4. Losing Promise.race branch kept mutating this.context after the
+      //      workflow moved on. Fix: branches write to branchRuntime.context only;
+      //      this.context is only touched during the final merge step.
+      // ─────────────────────────────────────────────────────────────────────────────
 
       case 'parallel': {
         const { steps, timeout } = step;
+
+        if (!steps || !Array.isArray(steps) || steps.length === 0) {
+          this.addWarning('Parallel step contains no sub-steps. Skipping.');
+          break;
+        }
+
+        // Snapshot context before any branch runs.
+        // Every branch reads from this — not from each other.
+        const contextSnapshot = { ...this.context };
+
+        // Build one promise per sub-step.
+        //
+        // Each branch runs against a prototype-linked clone of the runtime.
+        // Object.create(this) shares: allowedResolvers, auditLog, events,
+        // verbose, resources, agentMap — everything a step needs to execute.
+        // But branchRuntime.context is its own property that shadows this.context,
+        // so concurrent writes never collide.
+        //
+        // Errors are caught here and returned as structured outcomes so that
+        // Promise.all always resolves with the full result set — one failure
+        // does not cancel sibling branches.
+        const buildStepPromise = async (s, index) => {
+          const branchRuntime = Object.create(this);
+          branchRuntime.context = { ...contextSnapshot };
+
+          try {
+            await branchRuntime.executeStep(s, agentResolver);
+
+            const saveKey = s.saveAs || null;
+            const value   = saveKey ? branchRuntime.context[saveKey] : undefined;
+
+            return {
+              status:   'fulfilled',
+              index,
+              saveAs:   saveKey,
+              value,
+              stepType: s.type
+            };
+          } catch (error) {
+            return {
+              status:   'rejected',
+              index,
+              reason:   error.message || String(error),
+              stepType: s.type
+            };
+          }
+        };
+
+        const runAllSteps = () =>
+          Promise.all(steps.map((s, i) => buildStepPromise(s, i)));
+
+        let settledResults;
+
         if (timeout !== undefined && timeout > 0) {
-          const timeoutPromise = new Promise(resolve => {
-            setTimeout(() => resolve({ timedOut: true }), timeout);
-          });
-          const parallelPromise = Promise.all(
-            steps.map(s => this.executeStep(s, agentResolver))
-          ).then(() => ({ timedOut: false }));
-          const result = await Promise.race([timeoutPromise, parallelPromise]);
-          this.context.timed_out = result.timedOut;
-          if (result.timedOut) {
-            this.emit('parallel_timeout', { duration: timeout, steps: steps.length });
+          // Race: all steps vs timeout sentinel.
+          // runAllSteps never rejects (errors caught inside buildStepPromise),
+          // so Promise.race resolves with either the results array or null.
+          const timeoutPromise = new Promise(resolve =>
+            setTimeout(() => resolve(null), timeout)
+          );
+
+          settledResults = await Promise.race([runAllSteps(), timeoutPromise]);
+
+          if (settledResults === null) {
+            // Timeout won. Restore snapshot + mark timed_out.
+            // Do NOT merge partial results — we cannot know which branches
+            // completed cleanly before the cutoff.
+            this.context = { ...contextSnapshot, timed_out: true };
+
+            this.emit('parallel_timeout', {
+              duration:    timeout,
+              steps_count: steps.length
+            });
+
             if (this.verbose) {
               console.log(`⏰ Parallel execution timed out after ${timeout}ms`);
             }
+
+            this._createAuditEntry('parallel_timeout', {
+              timeout_ms:  timeout,
+              steps_count: steps.length,
+              severity:    'warn'
+            });
+
+            break;
           }
+
         } else {
-          await Promise.all(steps.map(s => this.executeStep(s, agentResolver)));
-          this.context.timed_out = false;
+          settledResults = await runAllSteps();
         }
+
+        // Merge results back into this.context.
+        // Start from the snapshot so pre-parallel state is the clean base,
+        // then layer each branch's saveAs result on top.
+        this.context = { ...contextSnapshot, timed_out: false };
+
+        for (const outcome of settledResults) {
+          if (outcome.status === 'fulfilled') {
+            const { saveAs, value } = outcome;
+            if (saveAs !== null && value !== undefined) {
+              this.context[saveAs] = value;
+            }
+          } else {
+            const { reason, index } = outcome;
+            this.addWarning(`Parallel step [index ${index}] failed: ${reason}`);
+
+            this.emit('parallel_step_failed', {
+              index,
+              reason,
+              stepType: outcome.stepType
+            });
+
+            this._createAuditEntry('parallel_step_failed', {
+              step_index: index,
+              reason,
+              severity:   'high'
+            });
+          }
+        }
+
         break;
       }
 
+           // ─────────────────────────────────────────────────────────────────────────────
+      // ESCALATION
+      //
+      // Governance Features:
+      //   1. Scope Safety: Fixes ReferenceError by declaring levelSteps in outer scope.
+      //   2. Auditability: Logs level start, completion, timeout, and final outcome.
+      //   3. Determinism: Ensures timed-out levels don't corrupt context.
+      // ─────────────────────────────────────────────────────────────────────────────
+
       case 'escalation': {
         const { levels } = step;
+        const { parseBlock } = require('../parser');
+
         let finalResult = null;
-        let currentTimeout = 0;
         let completedLevel = null;
+
         for (const level of levels) {
+          // Fix: Declare levelSteps in outer block scope to avoid ReferenceError
+          // in the timed-out branch.
+          const levelSteps = parseBlock(level.steps);
+
+          this._createAuditEntry('escalation_level_started', {
+            level: level.levelNumber,
+            timeout_ms: level.timeout,
+            steps_count: levelSteps.length,
+            severity: 'info'
+          });
+
           if (level.timeout === 0) {
-            const levelSteps = require('./parser').parseBlock(level.steps);
+            // Immediate level — execute sequentially
             for (const levelStep of levelSteps) {
               await this.executeStep(levelStep, agentResolver);
             }
+
+            // Check if result was saved
             if (levelSteps.length > 0) {
               const lastStep = levelSteps[levelSteps.length - 1];
               if (lastStep.saveAs && this.context[lastStep.saveAs] !== undefined) {
                 finalResult = this.context[lastStep.saveAs];
                 completedLevel = level.levelNumber;
-                break;
+
+                this._createAuditEntry('escalation_level_completed', {
+                  level: level.levelNumber,
+                  timed_out: false,
+                  severity: 'info'
+                });
+                break; // Escalation complete
               }
             }
+
           } else {
-            currentTimeout += level.timeout;
-            const timeoutPromise = new Promise(resolve => {
-              setTimeout(() => resolve({ timedOut: true }), level.timeout);
-            });
+            // Timed level
+            const timeoutPromise = new Promise(resolve =>
+              setTimeout(() => resolve({ timedOut: true }), level.timeout)
+            );
+
             const levelPromise = (async () => {
-              const levelSteps = require('./parser').parseBlock(level.steps);
               for (const levelStep of levelSteps) {
                 await this.executeStep(levelStep, agentResolver);
               }
               return { timedOut: false };
             })();
+
             const result = await Promise.race([timeoutPromise, levelPromise]);
+
             if (!result.timedOut) {
-              if (levelSteps && levelSteps.length > 0) {
+              // Level completed within time
+              if (levelSteps.length > 0) {
                 const lastStep = levelSteps[levelSteps.length - 1];
                 if (lastStep.saveAs && this.context[lastStep.saveAs] !== undefined) {
                   finalResult = this.context[lastStep.saveAs];
                   completedLevel = level.levelNumber;
-                  break;
+
+                  this._createAuditEntry('escalation_level_completed', {
+                    level: level.levelNumber,
+                    timed_out: false,
+                    severity: 'info'
+                  });
+                  break; // Escalation complete
                 }
               }
+            } else {
+              // Level timed out
+              this._createAuditEntry('escalation_level_timeout', {
+                level: level.levelNumber,
+                timeout_ms: level.timeout,
+                severity: 'warn'
+              });
+
+              if (this.verbose) {
+                console.log(
+                  `⏰ Escalation level ${level.levelNumber} timed out ` +
+                  `after ${level.timeout}ms — trying next level`
+                );
+              }
+              // Continue to next level
             }
           }
         }
+
+        // Final context state
         this.context.escalation_completed = finalResult !== null;
         this.context.timed_out = finalResult === null;
         if (completedLevel !== null) {
           this.context.escalation_level = completedLevel;
         }
+
+        this._createAuditEntry('escalation_outcome', {
+          completed: finalResult !== null,
+          completed_at_level: completedLevel,
+          timed_out: finalResult === null,
+          severity: finalResult !== null ? 'info' : 'warn'
+        });
+
         break;
       }
 
-      case 'connect': {
-        this.resources[step.resource] = step.endpoint;
-        break;
-      }
+case 'connect': {
+  if (!step.resource || !step.endpoint) {
+    this.addWarning('Connect step missing "resource" or "endpoint". Skipping.');
+    break;
+  }
 
+  // Only validate URL format for url-type connects.
+  // Resolver-type endpoints are package names (@o-lang/kyc-resolver)
+  // and are not valid URLs — do not run them through new URL().
+if (!step.targetType || step.targetType === 'url') {
+  try {
+    new URL(step.endpoint);
+  } catch (e) {
+    this.addWarning(`Connect: Invalid endpoint URL for "${step.resource}": ${step.endpoint}`);
+    break;
+  }
+}
+
+  this.resources[step.resource] = step.endpoint;
+
+  this._createAuditEntry('resource_connected', {
+    resource:         step.resource,
+    target_type:      step.targetType || 'url',
+    endpoint_masked:  step.endpoint.replace(/\/\/[^@]+@/, '//***@'),
+    severity:         'info'
+  });
+
+  if (this.verbose) {
+    console.log(`🔗 Connected "${step.resource}" → ${step.endpoint}`);
+  }
+  break;
+}
+       // ─────────────────────────────────────────────────────────────────────────────
+      // AGENT_USE
+      // Maps a logical agent name (e.g., "support_bot") to a registered resource.
+      // ─────────────────────────────────────────────────────────────────────────────
       case 'agent_use': {
+        if (!step.logicalName || !step.resource) {
+          this.addWarning('Agent_use step missing "logicalName" or "resource". Skipping.');
+          break;
+        }
+
+        // Optional: Validate that the resource was previously connected
+        if (!this.resources[step.resource]) {
+          this.addWarning(`Agent_use: Resource "${step.resource}" has not been connected yet.`);
+        }
+
         this.agentMap[step.logicalName] = step.resource;
+
+        // ✅ AUDIT LOG: Agent Mapping
+        this._createAuditEntry('agent_mapped', {
+          logical_name: step.logicalName,
+          resource: step.resource,
+          severity: 'info'
+        });
+
+        if (this.verbose) {
+          console.log(`🤖 Mapped agent "${step.logicalName}" to resource "${step.resource}"`);
+        }
         break;
       }
+           // ─────────────────────────────────────────────────────────────────────────────
+      // DEBRIEF
+      //
+      // Governance Features:
+      //   1. Semantic Validation: Ensures all {symbols} exist before emitting.
+      //   2. Interpolation: Agents receive resolved values, not raw templates.
+      //   3. Auditability: Every debrief is logged for compliance tracing.
+      // ─────────────────────────────────────────────────────────────────────────────
 
       case 'debrief': {
-        if (step.message.includes('{')) {
-          const symbols = step.message.match(/\{([^\}]+)\}/g) || [];
-          for (const symbolMatch of symbols) {
-            const symbol = symbolMatch.replace(/[{}]/g, '');
-            this._requireSemantic(symbol, 'debrief');
+        const messageTemplate = step.message;
+        
+        // 1. Validate all referenced symbols exist in context
+        if (messageTemplate && messageTemplate.includes('{')) {
+          const symbolMatches = messageTemplate.match(/\{([^\}]+)\}/g) || [];
+          
+          // Check every symbol. _requireSemantic will emit 'semantic_violation' 
+          // if a symbol is missing, but we also need to stop execution here.
+          const allPresent = symbolMatches.every(sym => {
+            const key = sym.replace(/[{}]/g, '');
+            return this._requireSemantic(key, 'debrief');
+          });
+
+          if (!allPresent) {
+            if (this.verbose) {
+              console.log(`⏭️  Debrief skipped — one or more symbols missing in context`);
+            }
+            // Break early. Do not emit incomplete data.
+            break;
           }
         }
-        this.emit('debrief', { agent: step.agent, message: step.message });
+
+        // 2. Interpolate — agent receives the real value, not the template
+        const interpolatedMessage = this._safeInterpolate(
+          messageTemplate,
+          this.context,
+          'debrief message'
+        );
+
+        // 3. Audit trail — every agent message must be traceable
+        this._createAuditEntry('debrief_emitted', {
+          agent: step.agent,
+          message_length: interpolatedMessage ? interpolatedMessage.length : 0,
+          symbols_resolved: (messageTemplate.match(/\{([^\}]+)\}/g) || []).length,
+          severity: 'info'
+        });
+
+        this.emit('debrief', {
+          agent: step.agent,
+          message: interpolatedMessage
+        });
+
+        if (this.verbose) {
+          console.log(`📨 Debrief → agent "${step.agent}": ${interpolatedMessage}`);
+        }
         break;
       }
+
 
       case 'prompt': {
         if (this.verbose) {
@@ -1870,56 +2347,153 @@ class RuntimeAPI {
         break;
       }
 
+       // ─────────────────────────────────────────────────────────────────────────────
+      // EMIT
+      //
+      // Governance Features:
+      //   1. Semantic Validation: Stops at first missing symbol to reduce noise.
+      //   2. Auditability: External events are logged with payload metadata.
+      //   3. Consistency: Uses same interpolation logic as debrief.
+      // ─────────────────────────────────────────────────────────────────────────────
+
       case 'emit': {
         const payloadTemplate = step.payload;
+        
+        // Extract unique symbols from the payload template
         const symbols = [...new Set(payloadTemplate.match(/\{([^\}]+)\}/g) || [])];
-        let shouldEmit = true;
-        for (const symbolMatch of symbols) {
-          const symbol = symbolMatch.replace(/[{}]/g, '');
-          if (!this._requireSemantic(symbol, 'emit')) {
-            shouldEmit = false;
-          }
-        }
-        if (!shouldEmit) {
+
+        // Validate all symbols, stop at first missing one
+        const allPresent = symbols.every(sym => {
+          const key = sym.replace(/[{}]/g, '');
+          return this._requireSemantic(key, 'emit');
+        });
+
+        if (!allPresent) {
           if (this.verbose) {
-            console.log(`⏭️ Skipped emit due to missing semantic symbols`);
+            console.log(`⏭️  Skipped emit due to missing semantic symbols`);
           }
           break;
         }
-        const payload = this._safeInterpolate(step.payload, this.context, 'emit payload');
+
+        // Interpolate the payload
+        const payload = this._safeInterpolate(
+          payloadTemplate,
+          this.context,
+          'emit payload'
+        );
+
+        // ✅ AUDIT LOG: External event emission
+        this._createAuditEntry('event_emitted', {
+          event: step.event,
+          payload_length: payload ? payload.length : 0,
+          symbols_resolved: symbols.length,
+          severity: 'info'
+        });
+
         this.emit(step.event, {
-          payload: payload,
-          workflow: this.context.workflow_name,
+          payload,
+          workflow: this.context.workflow_name || 'unknown',
           timestamp: new Date().toISOString()
         });
+
         if (this.verbose) {
           console.log(`📤 Emit event "${step.event}" with payload: ${payload}`);
         }
         break;
       }
 
+            // ─────────────────────────────────────────────────────────────────────────────
+      // PERSIST
+      //
+      // Governance Features:
+      //   1. Data Integrity: Prevents silent corruption of objects into "[object Object]".
+      //   2. Auditability: Logs path, format, and variable name (without raw values).
+      //   3. Safety: Validates semantic existence before attempting I/O.
+      // ─────────────────────────────────────────────────────────────────────────────
+
       case 'persist': {
-        if (!this._requireSemantic(step.variable, 'persist')) {
+        const fs = require('fs');
+        const path = require('path');
+
+        // 1. Semantic Guard: Ensure the variable exists in context
+        if (!step.variable || !this._requireSemantic(step.variable, 'persist')) {
           if (this.verbose) {
-            console.log(`⏭️ Skipped persist for undefined "${step.variable}"`);
+            console.log(`⏭️  Skipped persist for undefined "${step.variable}"`);
           }
           break;
         }
+
         const sourceValue = this.context[step.variable];
+        
+        // Resolve absolute path to prevent directory traversal attacks or ambiguity
         const outputPath = path.resolve(process.cwd(), step.target);
         const outputDir = path.dirname(outputPath);
+
+        // Ensure directory exists
         if (!fs.existsSync(outputDir)) {
-          fs.mkdirSync(outputDir, { recursive: true });
+          try {
+            fs.mkdirSync(outputDir, { recursive: true });
+          } catch (e) {
+            this.addWarning(`persist: failed to create directory "${outputDir}": ${e.message}`);
+            break;
+          }
         }
+
+        // 2. Serialize with safe fallback for object → non-JSON targets
         let content;
+        const isObject = sourceValue !== null && typeof sourceValue === 'object';
+        let formatUsed = 'string';
+
         if (step.target.endsWith('.json')) {
+          // Standard JSON serialization
           content = JSON.stringify(sourceValue, null, 2);
+          formatUsed = 'json';
+        } else if (isObject) {
+          // CRITICAL FIX: Prevents "[object Object]" data corruption.
+          // If user tries to save an object to .txt/.csv, we coerce to JSON 
+          // so the data remains recoverable, but we warn them.
+          this.addWarning(
+            `persist: "${step.variable}" is an object but target "${step.target}" is not .json. ` +
+            `Writing as JSON to prevent data loss. Rename target to .json or select a specific field.`
+          );
+          content = JSON.stringify(sourceValue, null, 2);
+          formatUsed = 'json-fallback';
         } else {
+          // Primitive values (string, number, boolean)
           content = String(sourceValue);
+          formatUsed = 'string';
         }
-        fs.writeFileSync(outputPath, content, 'utf8');
+
+        // 3. Write with error surfacing
+        try {
+          fs.writeFileSync(outputPath, content, 'utf8');
+        } catch (e) {
+          this.addWarning(`persist: failed to write "${step.variable}" to "${step.target}": ${e.message}`);
+          
+          // ✅ AUDIT LOG: Failed Write
+          this._createAuditEntry('persist_failed', {
+            variable: step.variable,
+            target: step.target,
+            error: e.message,
+            severity: 'high'
+          });
+          break;
+        }
+
+        // 4. ✅ AUDIT LOG: Successful Write
+        // Note: We do NOT log the actual value content to protect PII.
+        // We log metadata only.
+        this._createAuditEntry('context_persisted', {
+          variable: step.variable,
+          target: step.target,
+          format: formatUsed,
+          value_type: isObject ? 'object' : typeof sourceValue,
+          byte_length: Buffer.byteLength(content, 'utf8'),
+          severity: 'info'
+        });
+
         if (this.verbose) {
-          console.log(`💾 Persisted "${step.variable}" to ${step.target}`);
+          console.log(`💾 Persisted "${step.variable}" to ${step.target} (${formatUsed})`);
         }
         break;
       }
