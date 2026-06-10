@@ -315,6 +315,20 @@ function parseWorkflowLines(lines, filename) {
 
     // --- 7. Standard Steps & Keywords ---
 
+    // Calculate (NEW v1.4.0 — math expression evaluation)
+    const calcMatch = line.match(/^Calculate\s+(.+)$/i);
+    if (calcMatch) {
+      flushCurrentStep();
+      workflow.steps.push({
+        type: 'calculate',
+        expression: calcMatch[1].trim(),
+        stepNumber: workflow.steps.length + 1,
+        saveAs: null,
+        constraints: {}
+      });
+      continue;
+    }
+
     // Connect: Connect "name" to url "..." OR Connect "name" to resolver "..."
     const connectMatch = line.match(/^Connect\s+"([^"]+)"\s+to\s+(url|resolver)\s+"([^"]+)"$/i);
     if (connectMatch) {
@@ -468,13 +482,21 @@ function parseWorkflowLines(lines, filename) {
 
   flushCurrentStep();
 
-  // Post-process Save as in actionRaw
+  // Post-process Save as in actionRaw AND expression (calculate steps)
   workflow.steps.forEach(step => {
     if (step.actionRaw && step.saveAs === null) {
       const saveInAction = step.actionRaw.match(/(.+?)\s+Save as\s+(.+)$/i);
       if (saveInAction) {
         step.actionRaw = saveInAction[1].trim();
         step.saveAs = normalizeSymbol(saveInAction[2].trim());
+      }
+    }
+    // ✅ NEW: Handle Calculate steps with inline Save as
+    if (step.type === 'calculate' && step.expression && step.saveAs === null) {
+      const saveInExpr = step.expression.match(/(.+?)\s+Save as\s+(.+)$/i);
+      if (saveInExpr) {
+        step.expression = saveInExpr[1].trim();
+        step.saveAs = normalizeSymbol(saveInExpr[2].trim());
       }
     }
     if (step.saveAs) {
@@ -503,6 +525,19 @@ function parseBlock(lines) {
   for (let line of lines) {
     line = line.trim();
     if (!line || line.startsWith('#')) continue;
+
+    // Calculate in Block (NEW v1.4.0)
+    const calcMatch = line.match(/^Calculate\s+(.+)$/i);
+    if (calcMatch) {
+      flush();
+      steps.push({
+        type: 'calculate',
+        expression: calcMatch[1].trim(),
+        saveAs: null,
+        constraints: {}
+      });
+      continue;
+    }
 
     // Connect in Block
     const connectMatch = line.match(/^Connect\s+"([^"]+)"\s+to\s+(url|resolver)\s+"([^"]+)"$/i);
@@ -602,6 +637,14 @@ function parseBlock(lines) {
       if (saveInAction) {
         step.actionRaw = saveInAction[1].trim();
         step.saveAs = normalizeSymbol(saveInAction[2].trim());
+      }
+    }
+    // ✅ NEW: Handle Calculate steps with inline Save as in blocks
+    if (step.type === 'calculate' && step.expression && step.saveAs === null) {
+      const saveInExpr = step.expression.match(/(.+?)\s+Save as\s+(.+)$/i);
+      if (saveInExpr) {
+        step.expression = saveInExpr[1].trim();
+        step.saveAs = normalizeSymbol(saveInExpr[2].trim());
       }
     }
     if (step.saveAs) {

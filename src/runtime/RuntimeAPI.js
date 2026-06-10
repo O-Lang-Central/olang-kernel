@@ -3,7 +3,7 @@ const path = require('path');
 const crypto = require('crypto'); // ✅ CRYPTOGRAPHIC AUDIT LOGS
 
 // ✅ O-Lang Kernel Version (Safety Logic & Governance Rules)
-const KERNEL_VERSION = '1.4.0-alpha.1'; // 🔁 Bumped: PII redaction engine added
+const KERNEL_VERSION = '1.4.0'; // 🔁 Bumped: PII redaction engine added
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ✅ NEW v1.3.0 — SEPARATED PATTERN SETS
