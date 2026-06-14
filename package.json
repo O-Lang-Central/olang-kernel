@@ -1,6 +1,6 @@
 {
   "name": "@o-lang/olang",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "author": "Olalekan Ogundipe <info@olang.cloud>",
   "description": "O-Lang: A governance language for user-directed, rule-enforced agent workflows with native African language PII protection.",
   "main": "./src/runtime/index.js",
