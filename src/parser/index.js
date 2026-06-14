@@ -77,6 +77,11 @@ function parseWorkflowLines(lines, filename) {
   let escalationLevels = [];
   let currentLevel = null;
 
+  // ✅ ENHANCED: Track labels for blocks
+  let currentIfLabel = null;
+  let currentParallelLabel = null;
+  let currentEscalationLabel = null;
+
   const flushCurrentStep = () => {
     if (currentStep) {
       workflow.steps.push(currentStep);
@@ -87,6 +92,15 @@ function parseWorkflowLines(lines, filename) {
   while (i < lines.length) {
     let line = lines[i++].trim();
     if (line === '' || line.startsWith('#')) continue;
+
+    // ✅ ENHANCED: Extract "Step N:" label if present
+    let stepLabel = null;
+    let strippedLine = line;
+    const labelMatch = line.match(/^Step\s+(\d+)\s*:\s*(.+)$/i);
+    if (labelMatch) {
+      stepLabel = `Step ${labelMatch[1]}`;
+      strippedLine = labelMatch[2].trim();
+    }
 
     // --- 1. Workflow Declaration ---
     if (line.startsWith('Workflow ')) {
@@ -134,11 +148,13 @@ function parseWorkflowLines(lines, filename) {
     }
 
     // --- 4. Block: Escalation ---
-    if (line.match(/^Run in parallel with escalation:$/i)) {
+    // ✅ ENHANCED: Use strippedLine to match "Step N: Run in parallel with escalation:"
+    if (strippedLine.match(/^Run in parallel with escalation:$/i)) {
       flushCurrentStep();
       inEscalationBlock = true;
       escalationLevels = [];
       currentLevel = null;
+      currentEscalationLabel = stepLabel; // ✅ Save label
       continue;
     }
 
@@ -148,8 +164,10 @@ function parseWorkflowLines(lines, filename) {
         workflow.steps.push({
           type: 'escalation',
           levels: escalationLevels,
-          stepNumber: workflow.steps.length + 1
+          stepNumber: workflow.steps.length + 1,
+          label: currentEscalationLabel // ✅ ENHANCED: Add label
         });
+        currentEscalationLabel = null; // ✅ Reset
         inEscalationBlock = false;
         continue;
       } else if (line.match(/^Level \d+:/i)) {
@@ -185,7 +203,8 @@ function parseWorkflowLines(lines, filename) {
     }
 
     // --- 5. Block: Parallel ---
-    const timedParMatch = line.match(/^Run in parallel for (\d+)\s*([smhd])$/i);
+    // ✅ ENHANCED: Use strippedLine to match "Step N: Run in parallel for Xs"
+    const timedParMatch = strippedLine.match(/^Run in parallel for (\d+)\s*([smhd])$/i);
     if (timedParMatch) {
       flushCurrentStep();
       const value = parseInt(timedParMatch[1]);
@@ -195,14 +214,17 @@ function parseWorkflowLines(lines, filename) {
       
       inParallelBlock = true;
       parallelSteps = [];
+      currentParallelLabel = stepLabel; // ✅ Save label
       continue;
     }
 
-    if (line.match(/^Run in parallel$/i)) {
+    // ✅ ENHANCED: Use strippedLine to match "Step N: Run in parallel"
+    if (strippedLine.match(/^Run in parallel$/i)) {
       flushCurrentStep();
       inParallelBlock = true;
       parallelSteps = [];
       parallelTimeout = null;
+      currentParallelLabel = stepLabel; // ✅ Save label
       continue;
     }
 
@@ -214,8 +236,10 @@ function parseWorkflowLines(lines, filename) {
           type: 'parallel',
           steps: parsedParallel,
           timeout: parallelTimeout,
-          stepNumber: workflow.steps.length + 1
+          stepNumber: workflow.steps.length + 1,
+          label: currentParallelLabel // ✅ ENHANCED: Add label
         });
+        currentParallelLabel = null; // ✅ Reset
         inParallelBlock = false;
         parallelTimeout = null;
         continue;
@@ -227,12 +251,13 @@ function parseWorkflowLines(lines, filename) {
 
     // --- 6. Block: If / Else If / Else (FIXED STATE MACHINE) ---
     
-    // Start If
-    if (line.match(/^(?:If|When)\s+(.+)$/i)) {
+    // ✅ ENHANCED: Use strippedLine to match "Step N: If ..."
+    if (strippedLine.match(/^(?:If|When)\s+(.+)$/i)) {
       flushCurrentStep();
-      const ifMatch = line.match(/^(?:If|When)\s+(.+)$/i);
+      const ifMatch = strippedLine.match(/^(?:If|When)\s+(.+)$/i);
       ifCondition = ifMatch[1].trim();
       inIfBlock = true;
+      currentIfLabel = stepLabel; // ✅ Save label
       
       // Reset accumulators
       mainIfBody = [];
@@ -291,8 +316,10 @@ function parseWorkflowLines(lines, filename) {
           body: parseBlock(mainIfBody),           // Main body correctly isolated
           elseIf: elseIfChain,                    // Else-if chain
           elseBranch: inElseBlock ? parseBlock(currentBranchBody) : [], // Else body
-          stepNumber: workflow.steps.length + 1
+          stepNumber: workflow.steps.length + 1,
+          label: currentIfLabel // ✅ ENHANCED: Add label
         });
+        currentIfLabel = null; // ✅ Reset
 
         // Reset State
         inIfBlock = false;
@@ -316,7 +343,8 @@ function parseWorkflowLines(lines, filename) {
     // --- 7. Standard Steps & Keywords ---
 
     // Calculate (NEW v1.4.0 — math expression evaluation)
-    const calcMatch = line.match(/^Calculate\s+(.+)$/i);
+    // ✅ ENHANCED: Use strippedLine
+    const calcMatch = strippedLine.match(/^Calculate\s+(.+)$/i);
     if (calcMatch) {
       flushCurrentStep();
       workflow.steps.push({
@@ -324,13 +352,15 @@ function parseWorkflowLines(lines, filename) {
         expression: calcMatch[1].trim(),
         stepNumber: workflow.steps.length + 1,
         saveAs: null,
-        constraints: {}
+        constraints: {},
+        label: stepLabel // ✅ ENHANCED: Add label
       });
       continue;
     }
 
     // Connect: Connect "name" to url "..." OR Connect "name" to resolver "..."
-    const connectMatch = line.match(/^Connect\s+"([^"]+)"\s+to\s+(url|resolver)\s+"([^"]+)"$/i);
+    // ✅ ENHANCED: Use strippedLine
+    const connectMatch = strippedLine.match(/^Connect\s+"([^"]+)"\s+to\s+(url|resolver)\s+"([^"]+)"$/i);
     if (connectMatch) {
       flushCurrentStep();
       workflow.steps.push({
@@ -338,20 +368,23 @@ function parseWorkflowLines(lines, filename) {
         resource: connectMatch[1],
         endpoint: connectMatch[3],
         targetType: connectMatch[2].toLowerCase(),
-        stepNumber: workflow.steps.length + 1
+        stepNumber: workflow.steps.length + 1,
+        label: stepLabel // ✅ ENHANCED: Add label
       });
       continue;
     }
 
     // Use: Use "logicalName" as "resource"
-    const useMatch = line.match(/^Use\s+"([^"]+)"\s+as\s+"([^"]+)"$/i);
+    // ✅ ENHANCED: Use strippedLine
+    const useMatch = strippedLine.match(/^Use\s+"([^"]+)"\s+as\s+"([^"]+)"$/i);
     if (useMatch) {
       flushCurrentStep();
       workflow.steps.push({
         type: 'agent_use',
         logicalName: useMatch[1],
         resource: useMatch[2],
-        stepNumber: workflow.steps.length + 1
+        stepNumber: workflow.steps.length + 1,
+        label: stepLabel // ✅ ENHANCED: Add label
       });
       continue;
     }
@@ -365,7 +398,8 @@ function parseWorkflowLines(lines, filename) {
         stepNumber: parseInt(stepMatch[1], 10),
         actionRaw: stepMatch[2].trim(),
         saveAs: null,
-        constraints: {}
+        constraints: {},
+        label: `Step ${stepMatch[1]}` // ✅ ENHANCED: Add label
       };
       continue;
     }
@@ -378,59 +412,68 @@ function parseWorkflowLines(lines, filename) {
     }
 
     // Debrief
-    const debriefMatch = line.match(/^Debrief\s+([^\s]+)\s+with\s+"([^"]*)"$/i);
+    // ✅ ENHANCED: Use strippedLine
+    const debriefMatch = strippedLine.match(/^Debrief\s+([^\s]+)\s+with\s+"([^"]*)"$/i);
     if (debriefMatch) {
       flushCurrentStep();
       workflow.steps.push({
         type: 'debrief',
         agent: debriefMatch[1].trim(),
         message: debriefMatch[2],
-        stepNumber: workflow.steps.length + 1
+        stepNumber: workflow.steps.length + 1,
+        label: stepLabel // ✅ ENHANCED: Add label
       });
       continue;
     }
 
     // Prompt
-    const promptMatch = line.match(/^Prompt user to\s+"([^"]*)"$/i);
+    // ✅ ENHANCED: Use strippedLine
+    const promptMatch = strippedLine.match(/^Prompt user to\s+"([^"]*)"$/i);
     if (promptMatch) {
       flushCurrentStep();
       workflow.steps.push({
         type: 'prompt',
         question: promptMatch[1],
         stepNumber: workflow.steps.length + 1,
-        saveAs: null
+        saveAs: null,
+        label: stepLabel // ✅ ENHANCED: Add label
       });
       continue;
     }
 
     // Persist
-    const persistMatch = line.match(/^Persist\s+([^\s]+)\s+to\s+"([^"]*)"$/i);
+    // ✅ ENHANCED: Use strippedLine
+    const persistMatch = strippedLine.match(/^Persist\s+([^\s]+)\s+to\s+"([^"]*)"$/i);
     if (persistMatch) {
       flushCurrentStep();
       workflow.steps.push({
         type: 'persist',
         variable: persistMatch[1].trim(),
         target: persistMatch[2],
-        stepNumber: workflow.steps.length + 1
+        stepNumber: workflow.steps.length + 1,
+        label: stepLabel // ✅ ENHANCED: Add label
       });
       continue;
     }
 
     // Emit
-    const emitMatch = line.match(/^Emit\s+"([^"]+)"\s+with\s+(.+)$/i);
+    // ✅ ENHANCED: Use strippedLine
+    const emitMatch = strippedLine.match(/^Emit\s+"([^"]+)"\s+with\s+(.+)$/i);
     if (emitMatch) {
       flushCurrentStep();
       workflow.steps.push({
         type: 'emit',
         event: emitMatch[1],
         payload: emitMatch[2].trim(),
-        stepNumber: workflow.steps.length + 1
+        stepNumber: workflow.steps.length + 1,
+        label: stepLabel // ✅ ENHANCED: Add label
       });
       continue;
     }
 
     // Ask (Multiline support)
-    const askMatch = line.match(/^Ask\s+(.+)$/i);
+    // ✅ ENHANCED: Use strippedLine
+    const askMatch = strippedLine.match(/^Ask\s+(.+)$/i);
     if (askMatch) {
       flushCurrentStep();
       let actionContent = askMatch[1].trim();
@@ -448,7 +491,8 @@ function parseWorkflowLines(lines, filename) {
         actionRaw: `Action ${actionContent}`,
         stepNumber: workflow.steps.length + 1,
         saveAs: null,
-        constraints: {}
+        constraints: {},
+        label: stepLabel // ✅ ENHANCED: Add label
       });
       continue;
     }
@@ -465,17 +509,19 @@ function parseWorkflowLines(lines, filename) {
     }
 
     // Fallback: Treat as action
-    if (line.trim() !== '') {
+    // ✅ ENHANCED: Use strippedLine for actionRaw
+    if (strippedLine.trim() !== '') {
       if (!currentStep) {
         currentStep = {
           type: 'action',
           stepNumber: workflow.steps.length + 1,
-          actionRaw: line,
+          actionRaw: strippedLine,
           saveAs: null,
-          constraints: {}
+          constraints: {},
+          label: stepLabel // ✅ ENHANCED: Add label
         };
       } else {
-        currentStep.actionRaw += ' ' + line;
+        currentStep.actionRaw += ' ' + strippedLine;
       }
     }
   }
@@ -573,7 +619,8 @@ function parseBlock(lines) {
         stepNumber: parseInt(stepMatch[1], 10),
         actionRaw: stepMatch[2].trim(),
         saveAs: null,
-        constraints: {}
+        constraints: {},
+        label: `Step ${stepMatch[1]}` // ✅ ENHANCED: Add label
       };
       continue;
     }

@@ -3,7 +3,7 @@ const path = require('path');
 const crypto = require('crypto'); // ✅ CRYPTOGRAPHIC AUDIT LOGS
 
 // ✅ O-Lang Kernel Version (Safety Logic & Governance Rules)
-const KERNEL_VERSION = '1.4.0'; // 🔁 Bumped: PII redaction engine added
+const KERNEL_VERSION = '1.4.1'; // 🔁 Bumped: PII redaction engine added
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ✅ NEW v1.3.0 — SEPARATED PATTERN SETS
@@ -1624,8 +1624,15 @@ class RuntimeAPI {
         }
       }
 
-      let errorMessage = `[O-Lang SAFETY] No resolver handled action: "${action}\n`;
+       // ✅ ENHANCED: Extract step location context for debugging
+      const stepLabel = step.label || `unnamed_${step.type}_step`;
+      const branchContext = step._parentLabel ? ` [Inside ${step._parentLabel} → ${step._branch} branch]` : '';
+      
+      let errorMessage = `[O-Lang SAFETY] No resolver handled action: "${action}"\n`;
+      errorMessage += `  → Location: ${stepLabel}${branchContext}\n`;
+      errorMessage += `  → Workflow: ${this.context.workflow_name || 'unknown'}\n`;
       errorMessage += `Attempted resolvers:\n`;
+      
       resolverAttempts.forEach((attempt, i) => {
         const namePad = attempt.name.padEnd(30);
         if (attempt.status === 'skipped') {
@@ -1682,6 +1689,16 @@ class RuntimeAPI {
         errorMessage += `    → Visit https://www.npmjs.com/search?q=%40o-lang     for resolver packages\n`;
       }
       errorMessage += `\n🛑 Workflow halted to prevent unsafe data propagation to LLMs.`;
+      
+      // ✅ ENHANCED: Log the failure with full context before throwing
+      this._createAuditEntry('resolver_execution_failed', {
+        step_label: stepLabel,
+        branch_context: step._parentLabel ? `${step._parentLabel} (${step._branch})` : null,
+        action: action,
+        attempted_resolvers: resolverAttempts.map(a => a.name),
+        severity: 'high'
+      });
+
       throw new Error(errorMessage);
     };
 
@@ -1859,7 +1876,9 @@ class RuntimeAPI {
       //   3. Auditability: Logs which condition was evaluated and which branch fired.
       // ─────────────────────────────────────────────────────────────────────────────
 
-      case 'if': {
+           case 'if': {
+        const stepLabel = step.label || 'unnamed_if_block';
+        
         // 1. Validate all symbols referenced in the main condition
         const condSymbols = step.condition ? step.condition.match(/\{([^\}]+)\}/g) || [] : [];
         let symbolsValid = true;
@@ -1873,6 +1892,7 @@ class RuntimeAPI {
 
         if (!symbolsValid) {
           this._createAuditEntry('condition_skipped', {
+            step_label: stepLabel,
             condition: step.condition,
             reason: 'One or more symbols missing in context',
             severity: 'warn'
@@ -1884,6 +1904,7 @@ class RuntimeAPI {
         const mainPassed = this.evaluateCondition(step.condition, this.context);
 
         this._createAuditEntry('condition_evaluated', {
+          step_label: stepLabel,
           condition: step.condition,
           passed: mainPassed,
           branch: 'if',
@@ -1892,7 +1913,12 @@ class RuntimeAPI {
 
         if (mainPassed) {
           if (step.body && Array.isArray(step.body)) {
-            for (const s of step.body) await this.executeStep(s, agentResolver);
+            // ✅ ENHANCED: Tag child steps with parent context for debugging
+            for (const s of step.body) {
+              s._parentLabel = stepLabel;
+              s._branch = 'if';
+              await this.executeStep(s, agentResolver);
+            }
           }
           break; // Exit after successful if
         }
@@ -1913,6 +1939,7 @@ class RuntimeAPI {
 
             if (!branchSymbolsValid) {
                this._createAuditEntry('condition_skipped', {
+                step_label: stepLabel,
                 condition: branch.condition,
                 reason: 'One or more symbols missing in context',
                 severity: 'warn'
@@ -1923,6 +1950,7 @@ class RuntimeAPI {
             const branchPassed = this.evaluateCondition(branch.condition, this.context);
 
             this._createAuditEntry('condition_evaluated', {
+              step_label: stepLabel,
               condition: branch.condition,
               passed: branchPassed,
               branch: 'else-if',
@@ -1931,7 +1959,12 @@ class RuntimeAPI {
 
             if (branchPassed) {
               if (branch.body && Array.isArray(branch.body)) {
-                for (const s of branch.body) await this.executeStep(s, agentResolver);
+                // ✅ ENHANCED: Tag child steps with parent context
+                for (const s of branch.body) {
+                  s._parentLabel = stepLabel;
+                  s._branch = 'else-if';
+                  await this.executeStep(s, agentResolver);
+                }
               }
               elseIfFired = true;
               break;
@@ -1943,17 +1976,23 @@ class RuntimeAPI {
         // 4. else fallback
         if (step.elseBranch && Array.isArray(step.elseBranch)) {
           this._createAuditEntry('condition_evaluated', {
+            step_label: stepLabel,
             condition: 'else',
             passed: true,
             branch: 'else',
             severity: 'info'
           });
-          for (const s of step.elseBranch) await this.executeStep(s, agentResolver);
+          // ✅ ENHANCED: Tag child steps with parent context
+          for (const s of step.elseBranch) {
+            s._parentLabel = stepLabel;
+            s._branch = 'else';
+            await this.executeStep(s, agentResolver);
+          }
         }
 
         break;
       }
-
+      
        // ─────────────────────────────────────────────────────────────────────────────
       // PARALLEL
       //
