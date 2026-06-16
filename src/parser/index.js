@@ -572,16 +572,16 @@ function parseBlock(lines) {
     line = line.trim();
     if (!line || line.startsWith('#')) continue;
 
-    // Calculate in Block (NEW v1.4.0)
+    // Calculate in Block
     const calcMatch = line.match(/^Calculate\s+(.+)$/i);
     if (calcMatch) {
       flush();
-      steps.push({
+      current = {
         type: 'calculate',
         expression: calcMatch[1].trim(),
         saveAs: null,
         constraints: {}
-      });
+      };
       continue;
     }
 
@@ -589,12 +589,12 @@ function parseBlock(lines) {
     const connectMatch = line.match(/^Connect\s+"([^"]+)"\s+to\s+(url|resolver)\s+"([^"]+)"$/i);
     if (connectMatch) {
       flush();
-      steps.push({
+      current = {
         type: 'connect',
         resource: connectMatch[1],
         endpoint: connectMatch[3],
         targetType: connectMatch[2].toLowerCase()
-      });
+      };
       continue;
     }
 
@@ -602,11 +602,11 @@ function parseBlock(lines) {
     const useMatch = line.match(/^Use\s+"([^"]+)"\s+as\s+"([^"]+)"$/i);
     if (useMatch) {
       flush();
-      steps.push({
+      current = {
         type: 'agent_use',
         logicalName: useMatch[1],
         resource: useMatch[2]
-      });
+      };
       continue;
     }
 
@@ -620,7 +620,7 @@ function parseBlock(lines) {
         actionRaw: stepMatch[2].trim(),
         saveAs: null,
         constraints: {},
-        label: `Step ${stepMatch[1]}` // ✅ ENHANCED: Add label
+        label: `Step ${stepMatch[1]}`
       };
       continue;
     }
@@ -636,7 +636,11 @@ function parseBlock(lines) {
     const debriefMatch = line.match(/^Debrief\s+([^\s]+)\s+with\s+"([^"]*)"$/i);
     if (debriefMatch) {
       flush();
-      steps.push({ type: 'debrief', agent: debriefMatch[1].trim(), message: debriefMatch[2] });
+      current = {
+        type: 'debrief',
+        agent: debriefMatch[1].trim(),
+        message: debriefMatch[2]
+      };
       continue;
     }
 
@@ -644,7 +648,11 @@ function parseBlock(lines) {
     const persistMatch = line.match(/^Persist\s+([^\s]+)\s+to\s+"([^"]*)"$/i);
     if (persistMatch) {
       flush();
-      steps.push({ type: 'persist', variable: persistMatch[1].trim(), target: persistMatch[2] });
+      current = {
+        type: 'persist',
+        variable: persistMatch[1].trim(),
+        target: persistMatch[2]
+      };
       continue;
     }
 
@@ -652,20 +660,24 @@ function parseBlock(lines) {
     const emitMatch = line.match(/^Emit\s+"([^"]+)"\s+with\s+(.+)$/i);
     if (emitMatch) {
       flush();
-      steps.push({ type: 'emit', event: emitMatch[1], payload: emitMatch[2].trim() });
+      current = {
+        type: 'emit',
+        event: emitMatch[1],
+        payload: emitMatch[2].trim()
+      };
       continue;
     }
 
-    // Ask in Block
+    // Ask in Block — FIXED: Set as current instead of pushing
     const askMatch = line.match(/^Ask\s+(.+)$/i);
     if (askMatch) {
       flush();
-      steps.push({
+      current = {
         type: 'action',
         actionRaw: `Action ${askMatch[1].trim()}`,
         saveAs: null,
         constraints: {}
-      });
+      };
       continue;
     }
 
@@ -686,7 +698,6 @@ function parseBlock(lines) {
         step.saveAs = normalizeSymbol(saveInAction[2].trim());
       }
     }
-    // ✅ NEW: Handle Calculate steps with inline Save as in blocks
     if (step.type === 'calculate' && step.expression && step.saveAs === null) {
       const saveInExpr = step.expression.match(/(.+?)\s+Save as\s+(.+)$/i);
       if (saveInExpr) {
